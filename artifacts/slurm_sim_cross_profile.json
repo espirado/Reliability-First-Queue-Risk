@@ -1,0 +1,21 @@
+{
+  "LR": {
+    "auroc": 0.4997231067423508,
+    "ece": 0.10012309515948908,
+    "mce": 0.20709836113091248
+  },
+  "RF": {
+    "auroc": 0.9907024381951318,
+    "ece": 0.06883856779550583,
+    "mce": 0.5754937966736509
+  },
+  "GB": {
+    "auroc": 0.9893484025793486,
+    "ece": 0.048728248226792406,
+    "mce": 0.5829721853539196
+  },
+  "notes": {
+    "in_distribution_GB_ece": 0.001546891377509449,
+    "description": "Train on v100/t4-profile simulator, test on a100/h100-profile simulator. Discrimination (AUROC) transfers; calibration does not."
+  }
+}

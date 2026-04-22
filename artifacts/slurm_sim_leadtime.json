@@ -1,0 +1,23 @@
+{
+  "baseline": {
+    "alert_prob": 0.7,
+    "n_true_alerts": 152,
+    "median_s": 150589.5,
+    "p90_s": 152047.4,
+    "max_s": 152533.0
+  },
+  "heavy": {
+    "alert_prob": 0.7,
+    "n_true_alerts": 98,
+    "median_s": 157516.25,
+    "p90_s": 161989.6,
+    "max_s": 163830.5
+  },
+  "a100": {
+    "alert_prob": 0.7,
+    "n_true_alerts": 145,
+    "median_s": 132876.0,
+    "p90_s": 133799.2,
+    "max_s": 134798.0
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "baseline": {
+    "rule": "queue_depth_norm > 401.700 (cluster median)",
+    "precision": 0.20005189413596264,
+    "recall": 1.0,
+    "auroc": 0.9977807888210533
+  },
+  "heavy": {
+    "rule": "queue_depth_norm > 507.700 (cluster median)",
+    "precision": 0.200160128102482,
+    "recall": 1.0,
+    "auroc": 0.9930606936416185
+  },
+  "a100": {
+    "rule": "queue_depth_norm > 366.550 (cluster median)",
+    "precision": 0.2000996760528283,
+    "recall": 1.0,
+    "auroc": 0.9935699902880466
+  }
+}

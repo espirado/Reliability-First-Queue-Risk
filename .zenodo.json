@@ -1,0 +1,56 @@
+{
+  "title": "Reliability-First Queue Risk for GPU Clusters: Calibration, SLOs, and Reproducible Operational Integration",
+  "description": "Reproducible scientific-software artifact accompanying the ISS26 paper. Includes the full calibration-aware pipeline (feature engineering, five model families, isotonic post-hoc calibration, tier qualification, PSI drift detection, sliding-window recalibration), sample data for four cluster environments (EKS, Slurm+DCGM, Alibaba, Google Borg), trained calibrators, all benchmark results, and a single Jupyter notebook that regenerates every figure in the paper.",
+  "upload_type": "publication",
+  "publication_type": "conferencepaper",
+  "access_right": "open",
+  "license": "MIT",
+  "communities": [
+    {"identifier": "iss26"}
+  ],
+  "keywords": [
+    "GPU clusters",
+    "Kubernetes",
+    "Slurm",
+    "calibration",
+    "Expected Calibration Error",
+    "Brier decomposition",
+    "isotonic regression",
+    "drift detection",
+    "Population Stability Index",
+    "SLO",
+    "reproducibility",
+    "scientific software",
+    "ISS26"
+  ],
+  "creators": [
+    {
+      "name": "Espira, Andrew",
+      "affiliation": "Saint Peter's University",
+      "orcid": "0009-0002-9196-8094"
+    },
+    {
+      "name": "Dhole, Tushar",
+      "affiliation": "Saint Peter's University"
+    },
+    {
+      "name": "Nagar, Bhumi",
+      "affiliation": "Saint Peter's University"
+    },
+    {
+      "name": "Kumar, Sharath",
+      "affiliation": "Saint Peter's University"
+    }
+  ],
+  "related_identifiers": [
+    {
+      "relation": "isSupplementTo",
+      "identifier": "https://github.com/espirado/Reliability-First-Queue-Risk",
+      "resource_type": "software"
+    }
+  ],
+  "conference_title": "Improving Scientific Software Conference 2026 (ISS26)",
+  "conference_acronym": "ISS26",
+  "conference_place": "Boulder, CO, USA",
+  "conference_dates": "April 13--17, 2026"
+}

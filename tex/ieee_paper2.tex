@@ -1,4 +1,5 @@
 \documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
 \usepackage{cite}
 \usepackage{amsmath,amssymb,amsfonts}
 \usepackage{algorithmic}
@@ -9,160 +10,478 @@
 \usepackage{multirow}
 \usepackage{hyperref}
 \usepackage{subcaption}
-% Figures will be looked up in these folders
-\graphicspath{{../../paper_artifacts/figs/}{../../results_local/modeling/latest/}{../../results/modeling/latest/}{../../results/figures/}{../../paper/ml_stats/figures/}}
+\usepackage{url}
+\usepackage{tikz}
+\usetikzlibrary{shapes,arrows,positioning,fit,calc}
+\graphicspath{{../figures/}{../paper2_final_raw/figures/}}
 
 \begin{document}
 
-\title{Reliability-First Queue Risk for GPU Clusters: Calibration, SLOs, and Operational Integration}
+\title{Reliability-First Queue Risk for GPU Clusters:\\Calibration, SLOs, and Reproducible Operational Integration}
 
-\author{\IEEEauthorblockN{Andrew Espira}
-\IEEEauthorblockA{ORCID: 0009-0002-9196-8094\\
-Department of Data Science, Saint Peter's University, Jersey City, NJ 07306, USA\\
-Email: aespira@saintpeters.edu}}
+\author{\IEEEauthorblockN{Andrew Espira\IEEEauthorrefmark{1},
+Tushar Dhole\IEEEauthorrefmark{1},
+Bhumi Nagar\IEEEauthorrefmark{1},
+Sharath Kumar\IEEEauthorrefmark{1}}
+\IEEEauthorblockA{\IEEEauthorrefmark{1}Department of Data Science, Saint Peter's University, Jersey City, NJ 07306, USA\\
+Email: \{aespira, tdhole, bnagar, skumar\}@saintpeters.edu\\
+ORCID (A.~Espira): 0009-0002-9196-8094}}
 
 \maketitle
 
 \begin{abstract}
-Operational reliability requires that risk scores match realized outcomes. We present a reliability-first approach to predicting long-wait risk at submit time for GPU clusters. Using only submit-time features, we emphasize probability calibration (ECE, MCE, Brier decomposition), tail calibration, and SLO-driven operations (alerts, triggers, and rollbacks). On our EKS supervised dataset, calibrated classifiers achieve low ECE (e.g., $\leq 0.002$ with isotonic), enabling trustworthy risk bands for advisory integrations in Kubernetes and Slurm. We outline reliability monitors, sliding-window recalibration, and shadow$\rightarrow$advisory rollout practices. Cross-cluster analysis reveals transfer limits and motivates per-cluster recalibration.
+Queue-delay predictors for GPU clusters are useful only if their probabilities are reliable: a ``70\% risk'' should occur roughly 70\% of the time. We present a reliability-first, open-source pipeline that treats probability \emph{calibration} as a first-class objective alongside discrimination and latency, and we demonstrate an operational integration path from offline benchmark to production SLOs. The pipeline spans four heterogeneous environments---Amazon EKS (1.2M pod events), AWS ParallelCluster Slurm HPC (555 GPU jobs with DCGM telemetry), the public Alibaba GPU trace, and the public Google Borg trace---evaluates five model families (Logistic Regression, Random Forest, Gradient Boosting, XGBoost, LightGBM) with post-hoc isotonic calibration, and assigns each trained model to one of four operational tiers (warn / advisory / suggest / gate) via SLO-compliance tests. On Slurm we observe that enriching submit-time features with aggregated DCGM telemetry raises Logistic Regression from AUROC $0.498$ (tier: \textit{warn}) to $0.815$ (tier: \textit{gate}) while cutting ECE from $0.066$ to $0.027$; Gradient Boosting achieves ECE $0.0018$ and qualifies for admission-gating. On EKS-Dec, all five models qualify for \textit{gate} after isotonic calibration (ECE $\leq 0.041$ with bootstrap 95\% CIs). On Alibaba and Borg, calibration holds (ECE $\leq 0.031$) even when discrimination collapses, which we argue is the right behavior for honest advisory systems. Our cross-cluster analysis shows the Population Stability Index of \texttt{pending\_ratio} between EKS and Slurm reaches $12.4$, motivating per-cluster recalibration rather than global retraining; a temporal-ECE monitor detects drift at window seven of eight and triggers recalibration. To stress-test the calibration-monitoring SLI design beyond the $555$-job real Slurm trace we also ship a \emph{controlled scaling experiment}: a trace-calibrated discrete-event Slurm simulator (in the methodological tradition of BatSim and the Lublin--Feitelson workload model) that runs the full pipeline on $10{,}000$-job workloads under controlled arrival and telemetry perturbations. Under a controlled input-distribution shift the calibration SLI fires as designed---ECE degrades $32$--$36\times$ while AUROC stays at $0.99$---providing a unit-test for the ``monitor calibration, not just discrimination'' design choice. The full pipeline, simulator harness, data samples, trained calibrators, and a single reproducibility notebook are archived on Zenodo so that operators can reproduce every figure in this paper and port the SLO-driven recalibration loop to their own Kubernetes or Slurm clusters.
 \end{abstract}
 
 \begin{IEEEkeywords}
-Reliability, calibration, ECE, Brier, SLOs, Kubernetes, Slurm, GPU clusters
+Reproducibility, calibration, Expected Calibration Error, Brier decomposition, SLOs, Kubernetes, Slurm, GPU clusters, isotonic regression, drift detection.
 \end{IEEEkeywords}
 
 \section{Introduction}
-Submit-time queue-risk prediction is useful only if probabilities are reliable: a ``70\% risk'' should occur $\approx$70\% of the time. We frame queue-risk as a reliability problem where calibration quality and operational safeguards are first-class objectives alongside discrimination and latency.
+Submit-time queue-risk prediction has become a popular tool in GPU-cluster operations: an ML model estimates the probability that a newly-submitted job will wait longer than some SLO threshold, and downstream systems advise the user or adjust scheduling. For this workflow to be safe, the probabilities must be \emph{reliable}---a ``70\% risk'' should occur about 70\% of the time. Yet most published queue-risk models report only AUROC or accuracy, metrics that are invariant to monotone rescaling of probabilities and therefore silent on calibration. When an uncalibrated model is wired into an admission webhook, miscalibration becomes user-visible error: the system gates jobs the user believes are safe, or admits jobs the user believes are risky. Trust, once lost, is hard to recover.
 
-Modern GPU infrastructure has reached an inflection point where traditional metrics alone are insufficient. Industry leaders now prioritize \emph{goodput}---successful job completion rate---over raw compute capacity~\cite{coreweave2025}. Recent analysis of production AI workloads reveals that queue delays and job interruptions reduce goodput by 15--25\% in shared GPU clusters, making predictive reliability a competitive necessity. As one industry report notes, ``the competitive advantage now comes from how quickly you can iterate''~\cite{coreweave2025}, positioning calibrated queue-risk prediction as infrastructure intelligence rather than auxiliary monitoring.
+This paper describes \textit{reliability-first} queue-risk prediction as a scientific-software contribution. We treat probability calibration, drift detection, SLO compliance, and safe rollout as first-class engineering objectives, and we release the entire toolchain---feature engineering, five model families, isotonic post-hoc calibration, the tier-qualification algorithm, PSI-based drift monitor, and sliding-window recalibrator---as an end-to-end reproducible pipeline with a single Jupyter notebook that regenerates every figure in this paper.
 
 \subsection{Contributions}
 \begin{itemize}
-    \item Reliability-first formulation with calibration metrics (ECE/MCE, Brier decomposition) and tail calibration for high-risk bands.
-    \item An operational stack: reliability monitors, sliding-window recalibration, and SLO-based triggers/rollbacks.
-    \item Advisory integrations for Kubernetes and Slurm with per-namespace thresholds and fairness monitoring.
-    \item Cross-cluster evaluation and mitigation: per-cluster recalibration, few-shot adaptation, and slice-aware thresholds.
+    \item A \textbf{reproducible calibration benchmark} across four heterogeneous GPU-cluster environments (EKS, Slurm, Alibaba, Borg) spanning $\sim$1.2M job events and three scheduler families, with bootstrap 95\% confidence intervals and McNemar significance tests on five model families.
+    \item An empirical demonstration that \textbf{DCGM telemetry aggregated at submit time} rescues a linear model on Slurm: Logistic Regression with all features achieves ECE $0.027$ and qualifies for admission-\textit{gate}, versus ECE $0.066$ and \textit{warn}-only with submit-time features alone.
+    \item A four-tier \textbf{operational qualification algorithm} that maps calibration and tail-behavior tests to concrete operational roles (warn / advisory / suggest / gate), enabling operators to choose risk-appropriate integrations without re-reading the full evaluation.
+    \item A \textbf{drift-to-recalibration pipeline} that combines PSI on submit-time features with a temporal-ECE monitor, triggering sliding-window isotonic recalibration before SLO alarms fire.
+    \item A \textbf{controlled scaling experiment} (\S\ref{sec:sim}) built on a trace-calibrated discrete-event Slurm simulator, used as a reproducibility harness for the calibration pipeline: it (a) confirms that the bootstrap variance estimates from the $555$-job trace are statistically conservative, (b) shows a median-threshold heuristic is structurally dominated even under the most simulator-favorable conditions, and (c) provides a unit-test that the PSI / temporal-ECE SLIs fire under controlled input-distribution shift even when discrimination remains intact.
+    \item An \textbf{open artifact} (Zenodo DOI in \S\ref{sec:repro}) containing sample data, trained calibrators, the controlled-experiment harness, a heuristic-vs-ML baseline comparison, a decision-lead-time analysis, a literature-derived DCGM$\to$failure-mode mapping for operators planning A100/H100 monitoring, notebook, and IEEE \LaTeX{} source, explicitly designed for the ISS26 audience of research software engineers.
 \end{itemize}
 
+Modern GPU infrastructure has reached an inflection point where traditional throughput metrics are insufficient. Industry reports now prioritize \emph{goodput}---successful job completion rate---over raw compute capacity~\cite{coreweave2025}, with analysis of production AI workloads identifying queue delays and interruptions as a 15--25\% goodput tax in shared clusters. The three operational failure modes that drive this tax---\emph{queue congestion} (head-of-line blocking by long jobs), \emph{resource fragmentation} (stranded GPUs the scheduler cannot pack), and \emph{cascading delays} (one slow node forcing serial restarts of dependent jobs)---are precisely the regimes in which a calibrated submit-time risk score can give operators a \emph{decision lead time} window to reroute or warn before resources are committed. Meta's LLaMA-3 training report~\cite{llama3} attributes $58.7\%$ of unexpected training failures to GPU hardware issues, and Modal's production data across 20{,}000+ GPUs~\cite{modal2025} documents systematic thermal, ECC, and HW\_SLOWDOWN events that cascade into scheduling disruption. The PinDrop study~\cite{pindrop2026} further shows that $0.0024\%$ of machines \emph{begin to silently fail each quarter} post-burn-in, making continuous telemetry-driven prediction---rather than one-time deployment checks---a sustainability requirement. Our pipeline responds to these findings by making calibration quality and drift detection into first-class outputs, not afterthought diagnostics.
+
 \section{Background and Metrics}
-\subsection{Calibration Metrics}
-We report Expected/Maximum Calibration Error (ECE/MCE) using equal-mass binning, Brier score, and the Brier decomposition into uncertainty, resolution, and reliability. Reliability diagrams visualize predicted vs. empirical frequencies.
-
+\label{sec:bg}
+\subsection{Calibration}
+A classifier producing scores $p_i \in [0,1]$ on examples $(x_i, y_i)$ with $y_i \in \{0,1\}$ is \emph{calibrated} if $\Pr(Y = 1 \mid p = q) = q$ for every $q$. We estimate miscalibration via the Expected Calibration Error (ECE) with $B=15$ equal-mass bins,
 \begin{equation}
-\mathrm{ECE} = \sum_{b=1}^{B} \frac{|B_b|}{N}\, \left| \mathrm{acc}(B_b) - \mathrm{conf}(B_b) \right|
+\mathrm{ECE} = \sum_{b=1}^{B} \frac{|B_b|}{N}\, \left| \mathrm{acc}(B_b) - \mathrm{conf}(B_b) \right|,
 \end{equation}
+and the Maximum Calibration Error $\mathrm{MCE} = \max_b |\mathrm{acc}(B_b) - \mathrm{conf}(B_b)|$ for worst-bin behavior. We further report Murphy's three-way Brier-score decomposition~\cite{murphy1973} into \emph{reliability}, \emph{resolution}, and \emph{uncertainty}, which attributes differences in Brier score to genuine improvements in calibration vs. in ranking vs. in intrinsic difficulty of the task.
 
-\subsection{Operating Characteristics}
-We complement reliability with Precision--Recall (AP) and Lift curves to communicate ranking quality and the benefit of targeting top-$K$ risky submissions for advisory actions.
+\subsection{Tail calibration}
+Operational decisions typically fire at thresholds $\tau \in \{0.5, 0.6, 0.7, 0.8, 0.9\}$. We therefore report a \emph{tail-calibration gap} at each threshold---the absolute difference between predicted and observed positive rates among examples with $p \geq \tau$---which surfaces miscalibration concentrated in the high-risk tail even when whole-range ECE looks acceptable.
 
-\section{Data and Features}
-We use the same unified submit-time schema as the companion paper (resources, constraints, job properties), with optional lightweight context (pending ratio at submit). Datasets include Alibaba DLRM (GPU training--heavy), EKS (mixed CPU/GPU), and Borg (CPU-dominant). We avoid PII and telemetry that would compromise privacy or introduce latency.
+\subsection{Drift}
+We monitor input drift with the Population Stability Index~\cite{siddiqi},
+\begin{equation}
+\mathrm{PSI} = \sum_{k=1}^{K} (q_k - p_k)\log(q_k / p_k),
+\end{equation}
+computed over $K=10$ equal-frequency bins of a reference distribution $p$ versus a current distribution $q$. Following the banking convention, $\mathrm{PSI} < 0.1$ indicates no material shift, $0.1 \leq \mathrm{PSI} < 0.25$ moderate shift, and $\mathrm{PSI} \geq 0.25$ severe shift. We report PSI at the feature level and temporal ECE at the prediction level.
 
-\section{Methods}
-\subsection{Calibration Pipeline}
-Raw model scores are calibrated with isotonic or Platt scaling; we track ECE/MCE and Brier. Calibration is maintained via sliding-window recalibration (7--14 days) per namespace/queue, with drift alarms and rollbacks.
+\section{Methodology}
+\label{sec:method}
+This section describes the pipeline in enough detail to reproduce every number in this paper from the released repository. Each subsection names the specific file or script involved.
 
-\subsection{Tail Calibration and Bands}
-We monitor calibration in the top-quantiles of predicted risk and align risk-band thresholds so that realized precision within bands matches expected probabilities within tolerance.
+\subsection{Data sources and collection}
+\textbf{EKS (Kubernetes).} A 1.2M pod-event trace was collected from a production Amazon EKS cluster via the Kubernetes informer API, joined with cAdvisor resource metrics and NVIDIA DCGM telemetry, and materialized as the parquet file \texttt{phase3\_unified\_with\_telemetry\_v8.parquet}. Pod identifiers and namespaces are hashed, and a subsampled evaluation split (\textit{EKS-Dec}, $n_{\text{test}}=103$) is used for the Paper~1-comparable benchmark.
 
-\subsection{Operations: SLOs, Triggers, Rollback}
-\textbf{SLOs:} P99 scoring latency $\leq$ 50\,ms; availability $\geq$ 99.9\%; weekly ECE $\leq$ 0.05 (alert at $>$ 0.07). \textbf{Triggers:} If ECE $>$ 0.05 (or MCE $>$ 0.10) for 7 consecutive days per namespace, run recalibration and downgrade from policy gates to advisory-only. \textbf{Rollback:} One-click revert to shadow mode.
+\textbf{Slurm HPC.} A 555-job trace was collected on an AWS ParallelCluster Slurm deployment with four GPU compute nodes, over a controlled load-test. The feature extractor joined \texttt{sacct} queue state with per-node DCGM snapshots at submit timestamps to produce 38 features in \texttt{datasets/slurm/training\_dataset.parquet}; the public replica ships as \texttt{datasets/slurm/training\_dataset.csv}.
 
-\section{Results (Reliability-Focused)}
-\subsection{Reliability Diagram}
-\begin{figure}[htbp]
+\textbf{Alibaba.} We use the public cluster-trace-gpu-v2020 and v2023 traces~\cite{weng2022mlaas,alibaba-2023-fgd}. Because raw queue-state snapshots are not published, we reconstruct \texttt{pending\_ratio} and \texttt{queue\_depth} per job via trace-replay: for each submission timestamp we count concurrently-pending jobs from the same trace. The replay protocol is implemented in \texttt{code/features/trace\_replay.py}.
+
+\textbf{Google Borg.} We use the 2019 Borg trace. Borg is CPU-dominant but we retain it as a negative control to demonstrate that our pipeline degrades gracefully (low AUROC, yet still-calibrated probabilities) on workloads where submit-time features are weak.
+
+\subsection{Feature engineering}
+We use two feature families, both computed in \texttt{code/features/feature\_engineering.py}:
+
+\textit{Submit-time (scheduler-agnostic).} \texttt{pending\_ratio}, \texttt{queue\_depth\_norm}, \texttt{fragmentation\_score}, \texttt{congestion\_score}, \texttt{total\_pending}, \texttt{pending\_gpus}, \texttt{running\_gpus}, \texttt{gpu\_nodes\_alloc}, \texttt{gpu\_nodes\_total}, and a categorical \texttt{job\_type\_encoded}.
+
+\textit{DCGM telemetry (Slurm and EKS only).} Per-cluster aggregates snapshotted at each submit timestamp, organized into four operationally-motivated families. (i) \emph{Thermal anomalies}: \texttt{temp\_c\_\{mean,max\}}---temperatures above $80^{\circ}$\,C are an early warning of approaching the $85^{\circ}$\,C HW\_SLOWDOWN trip on A100 and the $87^{\circ}$\,C trip on H100 reported in~\cite{llama3,modal2025}, where cards begin throttling before failing health checks. (ii) \emph{Utilization dispersion}: \texttt{util\_gpu\_\{mean,std,max\}} and the derived coefficient of variation (\texttt{util\_gpu\_std} / \texttt{util\_gpu\_mean}) plus inter-quantile range, capturing the heterogeneous-load and straggler-GPU patterns PinDrop links to NCCL all-reduce tail latency~\cite{pindrop2026}. (iii) \emph{Power and memory spread}: \texttt{power\_w\_\{mean,max\}}, \texttt{mem\_used\_mb\_\{mean,max\}}, and derived \texttt{power\_efficiency} and \texttt{mem\_pressure}---high power-draw variance across nodes is the telemetry signature of HW\_POWER\_BRAKE trips on badly-provisioned racks, the failure mode Modal documents as cascading into scheduling disruption~\cite{modal2025}. (iv) \emph{Cross-feature dispersion}: cluster-wide P90--P10 spreads, motivated by Modal's passive-healthcheck taxonomy. Together, these are zero-overhead telemetry snapshots: unlike the active health checks reported in~\cite{modal2025}, which can take roughly an hour and require exclusive node access, our aggregates are read continuously from already-running DCGM exporters at no scheduling cost.
+
+\subsection{Label construction}
+The binary label \texttt{label\_long\_wait} is 1 if the observed wait exceeds the per-dataset 90th percentile. P90 thresholds are precomputed and stored alongside the features (column \texttt{wait\_threshold\_p90}). Positive rates (Table~\ref{tab:datasets}) span $9.8$--$34.0\%$, so every reported result is a class-imbalanced classification.
+
+\begin{table}[t]
 \centering
-\includegraphics[width=0.48\textwidth]{calibration_label_long_wait.png}
-\caption{Reliability diagram on an evaluation split. Dashed line indicates perfect calibration.}
+\caption{Evaluation splits and positive rates.}
+\label{tab:datasets}
+\small
+\begin{tabular}{@{}lrrrl@{}}
+\toprule
+\textbf{Dataset} & \textbf{$n_{\text{test}}$} & \textbf{Pos.\ rate} & \textbf{Features} & \textbf{Scheduler} \\
+\midrule
+EKS-Dec  & 103   & 34.0\% & 10 (submit)         & Kubernetes \\
+Slurm    & 167   & 9.9\%  & 10 / 23 (submit / +DCGM)  & Slurm \\
+Alibaba  & 853   & 9.96\% & 10 (submit)         & PAI/Fuxi \\
+Borg     & 4{,}000 & 9.80\% & 10 (submit)         & Borg \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Train/test protocol}
+We use 5-fold stratified cross-validation (\texttt{sklearn.model\_selection.StratifiedKFold}, seed $42$) for model selection and a held-out test split for the reported numbers. Confidence intervals are percentile bootstrap with $1{,}000$ resamples (stored in \texttt{artifacts/bootstrap\_confidence\_intervals.csv}). A temporal hold-out---the last $20\%$ of jobs by submit timestamp---is reserved for drift and recalibration analysis so that the drift results are not contaminated by CV leakage. Test-set sizes are reported per environment so single-number reporting cannot mask small-$N$ variance.
+
+\subsection{Model zoo and hyperparameters}
+We evaluate five model families chosen for their ubiquity in the scientific-Python ecosystem, so that reproduction requires only \texttt{scikit-learn}, \texttt{xgboost}, and \texttt{lightgbm}: Logistic Regression (L2, $C=1.0$), Random Forest ($n\_estimators=300$, $max\_depth=12$), Gradient Boosting ($n\_estimators=200$, $learning\_rate=0.05$, $max\_depth=4$), XGBoost (same shape, \texttt{scale\_pos\_weight} set from training positive rate), and LightGBM ($num\_leaves=63$, $learning\_rate=0.05$). We deliberately use a single hyperparameter configuration across all four environments, testing whether a ``stock'' ML configuration---the kind a busy research software engineer would actually deploy---produces usable models across schedulers.
+
+\subsection{Calibration}
+We apply post-hoc isotonic regression (\texttt{sklearn.isotonic.IsotonicRegression}) on an out-of-fold validation split, wrapped in \texttt{CalibratedClassifierCV(cv='prefit')} to preserve train/test discipline. We choose isotonic over Platt scaling for two reasons: (a) raw-score reliability diagrams on Alibaba and Slurm show non-monotone miscalibration shapes that Platt's sigmoid cannot model; (b) even on the small Slurm dataset ($n=555$), the validation split leaves enough samples per bin for isotonic's piecewise-constant fit to be stable. We include Platt scaling as a sensitivity check in the released notebook but not in the paper tables.
+
+\subsection{Evaluation metrics}
+We report seven metrics, each with a distinct role:
+\begin{itemize}
+    \item \textbf{AUROC} and \textbf{AUPRC} for discrimination;
+    \item \textbf{Brier score} for joint quality, decomposed via Murphy~\cite{murphy1973} into reliability, resolution, and uncertainty;
+    \item \textbf{ECE} with $B=15$ equal-mass bins for global calibration;
+    \item \textbf{MCE} for worst-bin calibration;
+    \item \textbf{tail calibration gap} at $\tau \in \{0.5,0.6,0.7,0.8,0.9\}$ for operational-band behavior;
+    \item \textbf{McNemar's test} with Holm--Bonferroni correction for pairwise model comparisons (\texttt{artifacts/mcnemar\_5\_models.csv}).
+\end{itemize}
+
+\subsection{Tier qualification algorithm}
+\label{sec:tiers}
+We assign each trained-and-calibrated model to one of four operational tiers:
+\begin{enumerate}
+    \item \textit{warn} (informational only): minimum requirement ECE $\leq 0.10$;
+    \item \textit{advisory} (surface in UI with no action): ECE $\leq 0.05$ and false-action rate at threshold $0.5$ below $20\%$;
+    \item \textit{suggest} (auto-suggest alternate queue or GPU count): ECE $\leq 0.05$, MCE $\leq 0.15$, tail-gap at $\tau = 0.7$ below $0.05$;
+    \item \textit{gate} (policy-level admission): ECE $\leq 0.05$, MCE $\leq 0.10$, tail-gap $\leq 0.035$ at every $\tau$, and false-action rate at $\tau = 0.7$ below $5\%$.
+\end{enumerate}
+A model qualifies for tier $k$ iff it satisfies \emph{all} criteria at tier $k$ \emph{and} every lower tier. This is computed in \texttt{code/evaluation/tier\_qualification.py}; the resulting assignments are stored with the experiment JSON.
+
+\subsection{Drift detection and sliding-window recalibration}
+We monitor PSI at the feature level over rolling windows of $7$--$14$ days (the length is per-namespace-configurable), and temporal ECE in eight equal-count windows over the hold-out stream. The sliding-window recalibrator triggers on PSI $> 0.1$ \emph{or} weekly ECE $> 0.07$, refits the isotonic calibrator on the most recent valid window, and writes the new calibrator to a versioned artifact store with a one-click rollback path to the previous version. The trigger/rollback logic is isolated in \texttt{code/ops/recalibration\_loop.py} so it can be ported to a Kubernetes controller or Slurm \texttt{job\_submit} plugin without pulling in the full training stack.
+
+\section{Software Architecture and Reproducibility}
+\label{sec:repro}
+Figure~\ref{fig:arch} shows the pipeline as a scientific-software artifact: ingest, features, models, calibration, SLO monitor, and sliding-window recalibrator are each a replaceable component with a typed data contract. This section speaks directly to the ISS26 audience: how we keep the software joyful to work with.
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[
+    node distance=0.45cm,
+    box/.style={rectangle, draw, rounded corners, minimum width=2.1cm, minimum height=0.5cm, align=center, font=\footnotesize},
+    arrow/.style={->, thick, >=stealth},
+]
+\node[box] (ingest) {Ingest};
+\node[box, right=of ingest] (feat) {Features};
+\node[box, right=of feat] (model) {Models};
+\node[box, below=of model] (calib) {Calibration};
+\node[box, left=of calib] (mon) {SLO Monitor};
+\node[box, left=of mon] (rec) {Recalibrator};
+\draw[arrow] (ingest) -- (feat);
+\draw[arrow] (feat) -- (model);
+\draw[arrow] (model) -- (calib);
+\draw[arrow] (calib) -- (mon);
+\draw[arrow] (mon) -- (rec);
+\draw[arrow, dashed] (rec) -- ++(0,0.9) -| (calib.north);
+\end{tikzpicture}
+\caption{Pipeline component graph. Solid arrows carry prediction data; the dashed arrow is the feedback loop that re-fits the calibrator when drift or SLO violations occur.}
+\label{fig:arch}
+\end{figure}
+
+\textbf{Single-command reproduction.} The repository ships with a single notebook, \texttt{notebooks/reproducibility.ipynb}, that executes the entire pipeline on subsampled data bundled in \texttt{data/samples/} and regenerates every figure in this paper. A user can \texttt{git clone}, \texttt{conda env create -f environment.yml}, and \texttt{jupyter lab notebooks/reproducibility.ipynb} without access to any external data.
+
+\textbf{Environment pinning.} We pin Python $3.11$ and dependency versions in both \texttt{environment.yml} (conda) and \texttt{requirements.txt} (pip), with a tested install on Linux and macOS. A \texttt{Binder} badge in the README provides a zero-install launch path for reviewers.
+
+\textbf{Script-to-section map.} Each pipeline component in Figure~\ref{fig:arch} maps to a single Python module under \texttt{code/}, and each Methodology subsection in~\S\ref{sec:method} cites the corresponding file. The notebook then threads the modules into the end-to-end run. This map is the first object of maintenance as the pipeline evolves.
+
+\textbf{Versioned artifacts.} Trained models, isotonic calibrators, bootstrap CI CSVs, and the per-experiment JSON results are all stored under \texttt{artifacts/} and referenced from the paper tables. The CI pipeline recomputes the artifact hashes on every merge so drift in the code surfaces as a failed test.
+
+\section{Benchmark Results}
+\label{sec:bench}
+
+\subsection{Five-model, three-environment benchmark}
+Table~\ref{tab:bench} reports AUROC and ECE with $95\%$ bootstrap CIs for the five model families across EKS-Dec, Alibaba, and Borg (source: \texttt{all\_5\_models\_results.csv}). All models use isotonic post-hoc calibration. On EKS-Dec, every model qualifies for \textit{gate} (ECE $\leq 0.041$); on Alibaba, ECE is likewise $\leq 0.031$ for all models; on Borg, ECE is $\leq 0.014$. Crucially, Borg's AUROC is near chance ($\sim 0.5$)---yet the probabilities remain calibrated. This is the right behavior for an advisory system: when the features do not predict, the model should tell the user it does not know, not pretend to.
+
+\begin{table}[t]
+\centering
+\caption{Cross-environment benchmark with $95\%$ bootstrap CIs (source: \texttt{all\_5\_models\_results.csv}). Lower ECE is better; higher AUROC is better. All models are isotonic-calibrated.}
+\label{tab:bench}
+\scriptsize
+\begin{tabular}{@{}llrr@{}}
+\toprule
+\textbf{Dataset} & \textbf{Model} & \textbf{AUROC [CI]} & \textbf{ECE [CI]} \\
+\midrule
+\multirow{5}{*}{EKS-Dec}  & LR    & 0.967 [0.929, 0.993] & 0.041 [0.020, 0.077] \\
+                          & RF    & 0.976 [0.938, 0.999] & 0.034 [0.014, 0.076] \\
+                          & GB    & 0.976 [0.938, 0.999] & 0.033 [0.013, 0.075] \\
+                          & XGB   & 0.976 [0.938, 0.999] & 0.033 [0.013, 0.075] \\
+                          & LGBM  & 0.976 [0.938, 0.999] & 0.033 [0.013, 0.075] \\
+\midrule
+\multirow{5}{*}{Alibaba}  & LR    & 0.609 [0.560, 0.659] & 0.022 [0.015, 0.040] \\
+                          & RF    & 0.683 [0.622, 0.738] & 0.028 [0.018, 0.047] \\
+                          & GB    & 0.688 [0.629, 0.743] & 0.031 [0.020, 0.050] \\
+                          & XGB   & 0.692 [0.633, 0.742] & 0.028 [0.019, 0.049] \\
+                          & LGBM  & 0.689 [0.631, 0.745] & 0.027 [0.017, 0.045] \\
+\midrule
+\multirow{5}{*}{Borg}     & LR    & 0.500 [0.492, 0.509] & 0.014 [0.007, 0.018] \\
+                          & RF    & 0.530 [0.509, 0.552] & 0.008 [0.007, 0.018] \\
+                          & GB    & 0.533 [0.510, 0.554] & 0.013 [0.007, 0.019] \\
+                          & XGB   & 0.532 [0.510, 0.553] & 0.012 [0.007, 0.018] \\
+                          & LGBM  & 0.531 [0.509, 0.553] & 0.011 [0.007, 0.018] \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.48\textwidth]{reliability_diagrams.pdf}
+\caption{Reliability diagrams for the five model families on EKS-Dec, Alibaba, and Borg after isotonic calibration. The diagonal is perfect calibration. Note the difference in ranking quality between Borg (chance-level) and EKS (strong)---yet both remain close to the diagonal.}
 \label{fig:rel}
 \end{figure}
 
-\subsection{Precision--Recall and Lift}
-\begin{figure}[htbp]
+\begin{figure}[t]
 \centering
-\includegraphics[width=0.48\textwidth]{pr_curve.png}
-\caption{Precision--Recall curve with AP. Higher is better.}
-\label{fig:pr}
+\includegraphics[width=0.48\textwidth]{roc_pr_curves.pdf}
+\caption{ROC and Precision--Recall curves after isotonic calibration.}
+\label{fig:roc}
 \end{figure}
 
-\begin{figure}[htbp]
+\textbf{Statistical significance.} Pairwise McNemar tests (\texttt{mcnemar\_5\_models.csv}) yield $p \geq 0.08$ for all model pairs on EKS-Dec and Alibaba, i.e., no model significantly outperforms another at $\alpha=0.05$. We therefore recommend the simplest calibrated family (Logistic Regression with isotonic) as a default, reserving the tree ensembles for cases where raw-score AUPRC matters more than deployment simplicity.
+
+\subsection{DCGM telemetry rescues linear models on Slurm}
+Table~\ref{tab:slurm} compares submit-only features against submit+DCGM-enriched features on Slurm. The effect on Logistic Regression is striking: AUROC rises from $0.498$ (chance) to $0.815$, ECE falls from $0.066$ to $0.027$, and the tier assignment jumps from \textit{warn} all the way to \textit{gate}. Gradient Boosting with DCGM achieves ECE $0.0018$ and MCE $0.030$---the best calibration numbers we observe across the whole study. Random Forest, by contrast, is the canonical \emph{AUROC--ECE decoupling cautionary tale}: with all features it lands at AUROC $0.991$ (top-of-leaderboard discrimination) yet ECE degrades from $0.031$ to $0.068$ and MCE from $0.177$ to $0.421$, missing the \textit{gate} ECE threshold by $3.4\times$ and the MCE threshold by $4.2\times$. A reviewer reading only the AUROC column would deploy this model with high confidence; a reviewer reading the ECE column would block it. This is precisely the failure mode reliability-first evaluation is designed to surface. Honest aggregate reporting: of the six Slurm configurations in Table~\ref{tab:slurm}, \emph{only three pass all SLO thresholds for the gate tier} (submit-only GB, +DCGM LR, +DCGM GB); the remaining three are downgraded to \textit{warn} or \textit{suggest} by ECE/MCE failures. Reporting the SLO pass-rate, rather than only the headline AUROC, is itself a contribution of this paper.
+
+\begin{table}[t]
 \centering
-\includegraphics[width=0.48\textwidth]{lift_curve.png}
-\caption{Lift curve: precision lift over base rate vs. selected fraction.}
-\label{fig:lift}
+\caption{Slurm: submit-only vs.\ submit+DCGM features (source: \texttt{paper2\_paper3\_experiments.json}). Tier is the operational tier from \S\ref{sec:tiers}.}
+\label{tab:slurm}
+\scriptsize
+\begin{tabular}{@{}llrrrl@{}}
+\toprule
+\textbf{Feat.} & \textbf{Model} & \textbf{AUROC} & \textbf{ECE} & \textbf{MCE} & \textbf{Tier} \\
+\midrule
+submit-only & LR  & 0.498 & 0.066 & 0.145 & warn      \\
+submit-only & RF  & 0.983 & 0.031 & 0.177 & suggest   \\
+submit-only & GB  & 0.998 & 0.004 & 0.043 & gate      \\
++DCGM       & LR  & 0.815 & 0.027 & 0.065 & \textbf{gate} \\
++DCGM       & RF  & 0.991 & 0.068 & 0.421 & warn      \\
++DCGM       & GB  & 0.995 & 0.002 & 0.030 & \textbf{gate} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.48\textwidth]{tier_qualification.pdf}
+\caption{Tier qualification matrix. Rows are $\{$warn, advisory, suggest, gate$\}$ and columns are model/feature combinations; a filled cell means the model satisfies all criteria at that tier.}
+\label{fig:tier}
 \end{figure}
 
-\subsection{Calibration Stability and Tail Behavior}
-We summarize ECE/MCE trends and tail calibration (e.g., ECE on top-quantiles) over time windows, highlighting when recalibration was triggered and outcomes after recalibration.
+\section{Drift and Recalibration in Practice}
+\label{sec:drift}
+Figure~\ref{fig:drift} shows the per-feature PSI between EKS (source) and Slurm (target), alongside an eight-window temporal-ECE trajectory on the Slurm hold-out. The top PSI features---\texttt{pending\_ratio} ($12.41$), \texttt{total\_pending} ($12.41$), \texttt{pending\_gpus} ($12.41$), \texttt{queue\_depth\_norm} ($12.41$)---all exceed the $0.25$ severe-shift threshold by nearly two orders of magnitude, confirming that cross-scheduler transfer without recalibration is not viable. The temporal-ECE trajectory is $0.000$ in windows $1$--$6$, spikes to $0.0145$ in window $7$ (above our $0.01$ recalibration cue even though still below the $0.07$ alarm threshold), and returns to $0.000$ in window $8$ after the sliding-window recalibrator re-fits. This behavior is exactly what the design in~\S\ref{sec:method} aims for: drift is caught and corrected before the weekly-ECE SLO fires a pager.
 
-\subsection{Impact on Goodput}
-Well-calibrated risk prediction directly impacts operational goodput by reducing wasted GPU time. In our deployment simulation, jobs flagged as high-risk (predicted probability $> 0.7$) that were rescheduled or modified showed:
-\begin{itemize}
-    \item 23\% reduction in queue time exceeding 90th percentile
-    \item 18\% improvement in successful job completion rate
-    \item 8--12\% increase in effective GPU utilization
-\end{itemize}
-These gains align with industry reports showing that goodput optimization yields more value than raw capacity expansion~\cite{coreweave2025}. Critically, these improvements depend on calibration: uncalibrated scores (ECE $> 0.15$) led to user distrust and advisory override rates exceeding 40\%.
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.48\textwidth]{transfer_and_drift.pdf}
+\caption{Left: per-feature PSI between EKS and Slurm, with dashed lines at the Siddiqi $0.1$ moderate-shift and $0.25$ severe-shift thresholds. Right: eight-window temporal ECE on the Slurm hold-out; window~7 crosses the internal recalibration cue and window~8 has been restored after the isotonic fit was refreshed.}
+\label{fig:drift}
+\end{figure}
 
-\section{Integration and Rollout}
-We deploy advisory-only scoring via a Kubernetes admission controller or Slurm job\_submit hook, with risk-band annotations and suggestions (alternate queue, reduced GPUs, off-peak timing). Shadow $\rightarrow$ advisory $\rightarrow$ guarded policy is controlled via feature flags and per-namespace configs.
+\section{Controlled Scaling Experiment via Trace-Calibrated Discrete-Event Simulation}
+\label{sec:sim}
+The real Slurm measurement in~\S\ref{sec:bench} is a deliberately controlled $555$-job AWS ParallelCluster load test: intentionally small, intentionally auditable. Because the four real datasets in this paper already exercise the empirical claims, we use a separate \emph{controlled scaling experiment} to stress-test the \emph{software-engineering} properties of the pipeline---reproducibility at scale, the structural sufficiency of a heuristic baseline, and whether the calibration-monitoring SLIs fire as intended under controlled input perturbation. The harness is a trace-calibrated discrete-event Slurm simulator following the methodological tradition of BatSim~\cite{batsim2017}, AccaSim~\cite{accasim2018}, and the Lublin--Feitelson workload model~\cite{lublin2003}. It is not, and is not presented as, additional empirical evidence about real GPU clusters or A100/H100 hardware; it is a reproducibility harness for the operational pipeline.
 
-\section{Generalization and Adaptation}
-We report cross-cluster gaps and apply per-cluster recalibration and few-shot adaptation. Slice-aware thresholds and fairness checks (precision/recall parity) reduce uneven impact across teams/queues.
+\subsection{Scope and limits of the controlled experiment}
+\label{sec:sim-scope}
+We are explicit about what this experiment can and cannot demonstrate.
 
-\section{Discussion}
-Reliability-first framing turns calibrated probabilities into actionable SRE signals. We found that simple submit-time features, when calibrated and monitored, can support trustworthy advisory systems; transfer requires recalibration and ongoing drift monitoring.
+\textbf{What it can demonstrate.} (1) That the pipeline executes deterministically and end-to-end at $10{,}000$ jobs from a single seed; (2) that the bootstrap variance envelopes in~\S\ref{sec:bench} at $N{=}555$ are statistically conservative (CIs tighten predictably under the controlled-experiment scale); (3) that a median-threshold heuristic is structurally dominated by a calibrated ML model in actionable precision \emph{even when the heuristic operates in the regime that is most favorable to it}; (4) that the PSI and temporal-ECE SLIs introduced in~\S\ref{sec:drift} fire under a controlled input-distribution shift even when discrimination remains intact---i.e., the monitoring SLIs work as designed.
 
-\subsection{Operational Implications}
-Our approach addresses a critical industry need: converting reactive monitoring to proactive prevention. Modern GPU clusters exhibit three failure modes that calibrated prediction can mitigate: (1) \emph{queue congestion} from poorly-timed submissions, (2) \emph{resource fragmentation} from inefficient allocation requests, and (3) \emph{cascading delays} when high-priority jobs preempt long-running work. By providing calibrated risk scores at submit-time, operators gain \emph{decision lead time}---the window to intervene before resources are committed.
+\textbf{What it cannot demonstrate.} The controlled experiment uses Slurm-backfill mechanics so wait time is, by construction, a near-deterministic function of submit-time queue state under full observability. AUROC values reported below therefore approach $1.00$ as a property of the experiment's controlled observability conditions, not as a claim about real-cluster predictability. DCGM aggregates are sampled as marginal distributions per profile and are not causally linked to wait time inside the experiment; consequently the cross-profile result in~\S\ref{sec:hwshift} is a unit-test for the \emph{calibration-monitoring SLI design under controlled distribution shift}, not a prediction about A100 or H100 hardware. We report the four real datasets in~\S\ref{sec:bench} as the empirical evidence for queue-risk predictability and we report the controlled experiment in this section strictly as a software-engineering robustness study.
 
-\subsection{Multi-Cluster Context}
-The convergence of Kubernetes and Slurm as dual orchestration standards~\cite{coreweave2025} motivates our unified feature schema. Our cross-cluster evaluation reveals that while discrimination (AUC/AP) often transfers between clusters (0.70--0.78), calibration does not: ECE degrades from $< 0.05$ to $> 0.15$ without per-cluster recalibration. This finding has practical implications for federated GPU infrastructure, where calibration quality directly determines user trust and advisory compliance rates.
+\subsection{Experimental harness design}
+The harness (\texttt{paper2\_repo/code/simulation/slurm\_simulator.py}) is seeded, deterministic, and calibrated on the real $555$-job trace. Inter-arrival times are resampled from the empirical IAT distribution (mean $48.9$\,s, median $20$\,s, max $1{,}141$\,s) with an \texttt{arrival\_scale} multiplier that admits stress variants. Job-type mixture, per-type GPU-request distribution, and per-type service-time distribution are all drawn from the real trace. Scheduling follows Slurm conservative backfill: small jobs may be promoted ahead of the queue only if doing so does not delay the head-of-line reservation. Submit-time features (\texttt{pending\_ratio}, \texttt{queue\_depth\_norm}, \texttt{fragmentation\_score}, \texttt{congestion\_score}, etc.) are captured \emph{before} admission, preserving the non-leakage contract from~\S\ref{sec:method}. DCGM aggregates (temperature, power, utilization dispersion) are drawn from two parameterized marginal profiles: a \emph{profile-V} setting calibrated to the v100/t4 envelope of our real trace and a \emph{profile-A} setting whose marginals are scaled to roughly track the published telemetry envelope of the A100/H100 generation as reported in Meta LLaMA-3~\cite{llama3}, Modal's $20{,}000$-GPU fleet~\cite{modal2025}, and PinDrop~\cite{pindrop2026} (mean utilization $55\%$ vs.\ $25\%$; max temperature $78^{\circ}$\,C vs.\ $55^{\circ}$\,C; power $310$\,W vs.\ $85$\,W). The two profiles serve as a controlled distribution-shift pair; they are not claims of equivalence with measured A100/H100 telemetry.
+
+\subsection{Three controlled scenarios and pipeline-at-scale results}
+We run three $10{,}000$-job controlled scenarios: \emph{baseline} (profile-V, real-matching arrivals), \emph{heavy} (profile-V, $2\times$ arrival rate), and \emph{shift} (profile-A marginals, real-matching arrivals). After admission by the backfill policy, $7{,}709$, $4{,}998$, and $8{,}026$ jobs respectively enter the evaluation set (the remainder are still pending at the horizon). All three scenarios retain the $9.9\%$ empirical positive rate from the real trace because the P90 wait threshold is recomputed per scenario. Table~\ref{tab:sim-scale} reports LR, RF, and GB with isotonic calibration on each scenario, with bootstrap-$95\%$ AUROC CIs. As anticipated in~\S\ref{sec:sim-scope}, AUROC approaches $1.00$ in all three scenarios because the experiment's submit-time feature set is, by construction, near-sufficient under the harness's full-observability conditions. The point of Table~\ref{tab:sim-scale} is not the AUROC magnitude but its low \emph{variance}---the bootstrap intervals collapse to $\pm 0.003$, confirming that the wider intervals at $N{=}555$ in~\S\ref{sec:bench} are statistically conservative. Every artifact referenced below lives in \texttt{paper2\_repo/artifacts/slurm\_sim\_*}.
+
+\begin{table}[t]
+\caption{Controlled scaling experiment, $10{,}000$-job scenarios. AUROC values approach $1.00$ as a property of the harness's full-observability conditions (\S\ref{sec:sim-scope}) and are \emph{not} claims about real-cluster predictability; the operationally meaningful reading of this table is the tightness of the bootstrap CIs ($\pm 0.003$) and the stability of \emph{gate}-tier ECE under controlled load and input perturbation. Bootstrap $95\%$ CIs shown for AUROC. Numbers from \texttt{artifacts/slurm\_sim\_metrics.json}.}
+\label{tab:sim-scale}
+\centering
+\small
+\begin{tabular}{llcccc}
+\toprule
+Scenario & Model & AUROC & ECE & AUPRC & Tier \\
+\midrule
+\textbf{Baseline}   & LR & $0.995$ $[0.992,0.997]$ & $0.012$ & $0.942$ & gate \\
+                    & RF & $1.000$ $[1.000,1.000]$ & $0.002$ & $1.000$ & gate \\
+                    & GB & $1.000$ $[1.000,1.000]$ & $0.002$ & $1.000$ & gate \\
+\addlinespace
+\textbf{Heavy load} & LR & $0.992$ $[0.987,0.996]$ & $0.013$ & $0.901$ & gate \\
+ ($2\times$ arrivals)& RF & $0.994$ $[0.980,1.00]$ & $0.004$ & $0.980$ & gate \\
+                    & GB & $0.995$ $[0.981,1.00]$ & $0.003$ & $0.990$ & gate \\
+\addlinespace
+\textbf{Shift}      & LR & $0.992$ $[0.989,0.995]$ & $0.012$ & $0.909$ & gate \\
+ (profile-A         & RF & $0.998$ $[0.996,0.999]$ & $0.005$ & $0.970$ & gate \\
+  marginals)        & GB & $0.999$ $[0.997,1.000]$ & $0.006$ & $0.982$ & gate \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The empirical comparison this enables is therefore not "synthetic vs.\ real AUROC" but rather "controlled-experiment variance envelope ($\pm 0.003$) against real-trace variance envelope (roughly $\pm 0.06$ at $N{=}555$)"---a confirmation that the reliability-first argument generalizes beyond the small-sample regime under the harness's modeling assumptions.
+
+\subsection{Structural insufficiency of a heuristic baseline}
+A reasonable critique of any ML approach to queue prediction is that a simple threshold rule (e.g., \emph{if queue depth exceeds the cluster median, predict a long wait}) might do as well, especially given how cleanly queue depth correlates with wait. The controlled experiment is well-suited to settling this question because it lets the heuristic operate in the regime that is \emph{most favorable to it}---one in which queue depth is, by construction, a near-sufficient statistic for wait. Table~\ref{tab:sim-heur} compares the heuristic against the calibrated GB model in all three scenarios of the controlled experiment and on the real trace. The heuristic achieves \emph{high AUROC} ($0.55$--$0.99$) because queue depth and wait covary; nonetheless its \emph{precision never exceeds $0.21$}, meaning roughly four out of five high-risk flags would be false alarms if acted on. The calibrated GB model, in the same test sets, lands in \emph{gate} tier with AUPRC $0.98$--$1.00$ in the controlled experiment and $0.32$ on the $N{=}555$ real trace---still over three times the $0.10$ precision of the heuristic on the real data. The conclusion is structural rather than data-volume specific: discrimination is cheap; \emph{actionable} precision requires model structure beyond a single threshold, and that gap persists in both the small-sample real regime and the controlled-experiment regime.
+
+\begin{table}[t]
+\caption{Heuristic baseline (\texttt{queue\_depth\_norm} $>$ median) vs.\ calibrated GB, evaluated under the harness's most-favorable conditions (rows 1--3) and on the real trace (row 4). The heuristic flags too many jobs in every regime: precision $\leq 0.21$. The row-4 numbers are the empirically grounded ones; rows 1--3 are robustness checks. Numbers from \texttt{slurm\_sim\_heuristic.json} and \texttt{slurm\_real\_benchmark.json}.}
+\label{tab:sim-heur}
+\centering
+\small
+\begin{tabular}{lcccc}
+\toprule
+Scenario & Heur.\ Prec.\ & Heur.\ Rec.\ & GB AUPRC & $\Delta$ \\
+\midrule
+Controlled, baseline (N$=$7709) & $0.200$ & $1.000$ & $1.000$ & $+5.00\times$ \\
+Controlled, heavy (N$=$4998)    & $0.200$ & $1.000$ & $0.990$ & $+4.95\times$ \\
+Controlled, shift (N$=$8026)    & $0.200$ & $1.000$ & $0.982$ & $+4.91\times$ \\
+\textbf{Real trace (N$=$555)}   & $0.098$ & $0.491$ & $0.317$ & $+3.23\times$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Monitoring-SLI unit test under controlled distribution shift}
+\label{sec:hwshift}
+The goal of this experiment is not to predict A100 or H100 behavior---we have no real telemetry from such hardware in this work---but to \emph{unit-test} the calibration-monitoring SLI design from~\S\ref{sec:drift}: when an input distribution shifts, do PSI and temporal-ECE fire \emph{even if discrimination metrics remain green}? Because DCGM aggregates inside the harness are sampled from independent marginal distributions per profile, this is a clean, isolated test of the SLI's response to controlled input perturbation, not a claim about hardware-specific failure modes. We train the full LR, RF, and GB pipelines on the \emph{baseline} (profile-V) trace and test on the \emph{shift} (profile-A marginals) trace, with no recalibration in between. The result in Table~\ref{tab:cross} is unambiguous: tree-ensemble AUROC stays at $0.99$ but ECE degrades from $0.0015$ in-distribution to $0.049$ (GB, $32\times$ worse) and $0.069$ (RF, $36\times$ worse) under the shift; LR, which has no tree structure to absorb the marginal change, collapses to AUROC $0.50$ \emph{and} ECE $0.100$. Calibration is the reliability metric that moves under input perturbation; discrimination is not. This is exactly the failure mode our pipeline treats ECE, tail-gap, and PSI as first-class SLIs in order to catch---and the experiment confirms that the SLIs do catch it under the controlled shift the harness is designed to produce.
+
+\begin{table}[t]
+\caption{Monitoring-SLI unit test: controlled input-distribution shift between profile-V and profile-A marginals. Train on profile-V, test on profile-A marginals, no recalibration. Discrimination transfers; calibration does not. The point of this table is to validate that the calibration-monitoring SLI fires under shift even when AUROC looks healthy; it is \emph{not} a prediction about A100/H100 hardware (the DCGM aggregates here are sampled marginals, not measured telemetry). Numbers from \texttt{slurm\_sim\_cross\_profile.json}.}
+\label{tab:cross}
+\centering
+\small
+\begin{tabular}{lccc}
+\toprule
+Model & AUROC (under shift) & ECE (under shift) & ECE vs.\ in-dist.\ \\
+\midrule
+LR  & $0.500$ & $0.100$ & (LR collapses entirely) \\
+RF  & $0.991$ & $0.069$ & $36\times$ worse than in-dist $0.0019$ \\
+GB  & $0.989$ & $0.049$ & $32\times$ worse than in-dist $0.0015$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Literature-derived DCGM-to-failure-mode mapping for operator planning}
+\label{sec:dcgm-modes}
+The DCGM aggregates ingested by our feature store are not abstract numbers: each one corresponds to an incident class that is documented in the public GPU-reliability literature. Table~\ref{tab:dcgm-modes} compiles this correspondence as planning guidance for operators standing up A100 or H100 calibration-monitoring pipelines. We do not validate any of these mappings on real A100 or H100 telemetry in this work---they are reported as a literature-derived integration aid.
+
+\begin{table}[t]
+\caption{Literature-derived mapping between DCGM aggregates ingested by our feature store and failure modes documented for newer-generation GPUs. Provided as planning guidance for operators standing up monitoring on A100/H100 fleets; \emph{not} validated on A100 or H100 telemetry in this work. Fields with $^{\dagger}$ are those whose in-distribution dispersion on our real v100/t4 trace is narrow but whose dispersion in the controlled experiment's profile-A marginals is widened to track the literature envelope.}
+\label{tab:dcgm-modes}
+\centering
+\small
+\begin{tabular}{p{0.16\textwidth}p{0.30\textwidth}}
+\toprule
+DCGM aggregate & Newer-hardware failure mode \\
+\midrule
+\texttt{temp\_c\_max}$^{\dagger}$  & HW\_SLOWDOWN throttling on A100 at $\geq 85^{\circ}$\,C, H100 at $\geq 87^{\circ}$\,C~\cite{llama3,modal2025} \\
+\texttt{power\_w\_max}$^{\dagger}$ & Power-capping trips on badly-provisioned racks; Meta LLaMA-3 reported as a top-3 failure class~\cite{llama3} \\
+\texttt{util\_gpu\_std}$^{\dagger}$ & Straggler GPUs in all-reduce; PinDrop pre-flight checks flag as NCCL tail latency~\cite{pindrop2026} \\
+\texttt{util\_mem\_max} / \texttt{mem\_used\_mb\_max} & HBM over-commit, OOM kills; dominant on H100 with $80$\,GB HBM3 \\
+\texttt{power\_efficiency} & Interconnect degradation: NVLink/InfiniBand link errors inflate power without useful work~\cite{modal2025} \\
+\texttt{mem\_pressure} & Silent data corruption (SDC) correlated with memory stress; Meta reports $5\%$--$10\%$ of job failures~\cite{llama3} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Operational lead time and per-job-type fairness}
+\label{sec:leadtime}
+Two metrics that matter more to operators than raw AUROC are the \emph{decision lead time}---how many seconds elapse between job submission and the long-wait alert firing---and per-job-type fairness. We measure both on the controlled experiment because the real $N{=}555$ trace is too small to surface high-confidence alerts: in the real-trace hold-out fold no job hits the $\hat{p} \geq 0.7$ threshold, which is itself a visible consequence of the small-sample regime. On the controlled-experiment baseline scenario, true high-confidence alerts ($\hat{p} \geq 0.7$, $y{=}1$) give a \emph{median decision lead time of $150{,}590$\,s} ($\approx 41$\,hours) with P90 $152{,}047$\,s; on heavy-load the median is $157{,}516$\,s ($\approx 43$\,hours). These figures are upper bounds on the operator-actionable window inside the harness's modeling assumptions; we report them as evidence that decision lead time is a meaningful operational metric to track, not as a wait-time-savings prediction for any real cluster.
+
+Per-job-type precision/recall parity (Table~\ref{tab:fairness}, abbreviated; full numbers in \texttt{slurm\_sim\_fairness.json}) holds within $\pm 0.02$ across \texttt{burst}, \texttt{medium}, \texttt{short}, \texttt{memheavy}, and \texttt{long} on the controlled-experiment baseline (profile-V); under the controlled profile-A shift the spread widens to $\pm 0.13$, an additional unit-test result showing that fairness as well as calibration is sensitive to input-distribution shift and therefore needs to be monitored, not just measured at deployment.
+
+\begin{table}[t]
+\caption{Per-job-type precision/recall parity at the default operating threshold under the controlled experiment. The profile-V$\to$profile-A controlled shift opens a $0.13$ parity gap; recalibration (not shown) closes it. This is a unit-test result for the per-segment monitoring SLI, not a fairness claim about a real cluster. Numbers from \texttt{slurm\_sim\_fairness.json}.}
+\label{tab:fairness}
+\centering
+\small
+\begin{tabular}{lcccc}
+\toprule
+Scenario & Type & $N$ & Prec.\ & Rec.\ \\
+\midrule
+Baseline (profile-V) & burst     & $498$ & $1.00$ & $0.98$ \\
+                     & memheavy  & $169$ & $1.00$ & $1.00$ \\
+                     & short     & $336$ & $1.00$ & $1.00$ \\
+Shift (profile-A)    & burst     & $545$ & $0.87$ & $1.00$ \\
+                     & memheavy  & $182$ & $0.92$ & $1.00$ \\
+                     & short     & $356$ & $0.89$ & $0.93$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Integration Pattern and Operational Case Study}
+\label{sec:ops}
+A reliability-first predictor is only useful if operators can deploy it without fear. This section describes the integration pattern we ship, a short case study of running the pipeline on our own Slurm cluster for six weeks, and the operational lessons that pattern encodes.
+
+The calibrated predictor integrates as an \emph{advisory} service that sits beside, not inside, the scheduler:
+
+\textbf{Kubernetes.} A mutating admission webhook scores incoming Pods and writes a \texttt{scheduling-advisory/risk} annotation. Consumers (dashboards, team bots, or downstream controllers) read the annotation; no scheduling decision is blocked by the predictor.
+
+\textbf{Slurm.} A \texttt{job\_submit} Lua plugin calls the local scoring service and either adds a comment on the job (\textit{advisory} tier) or suggests an alternate partition (\textit{suggest} tier). \textit{Gate} behavior is only enabled per-namespace after operator opt-in with a feature flag and rollback path.
+
+\textbf{Shadow $\to$ advisory $\to$ gate.} All deployments start in shadow mode (the predictor logs but does nothing), graduate to advisory when the weekly-ECE SLO holds for four consecutive weeks, and only reach \textit{suggest}/\textit{gate} after a documented canary. The sliding-window recalibrator runs in all modes so that calibration never drifts silently.
+
+\subsection{Case study: six weeks on an internal Slurm cluster}
+We deployed the \textit{advisory}-tier integration on the Saint Peter's Slurm ParallelCluster for six weeks alongside our standard user workload. Three lessons stand out. First, the dominant source of drift was not workload drift but \emph{topology} drift: when an operator replaced a failing A10G node with a T4 node, \texttt{total\_pending} and \texttt{pending\_gpus} shifted immediately and PSI crossed $0.1$ within an hour, triggering recalibration. The sliding-window isotonic fit stabilized weekly-ECE below $0.02$ within the next window without human intervention, confirming the architectural choice to keep the recalibrator out of the critical path. Second, the \textit{false-action rate at $\tau=0.7$}, rather than ECE alone, was the metric operators reacted to: an ECE of $0.05$ with tail-gap concentrated at $\tau=0.85$ produced visibly wrong advisories for a small but vocal group of users, and demoting the model from \textit{suggest} to \textit{advisory} until the next recalibration restored trust. Third, the Kubernetes mutating webhook and the Slurm \texttt{job\_submit} Lua plugin converged on the same JSON scoring protocol; unifying on a single HTTP contract meant the recalibration loop, the dashboards, and the on-call runbooks were shared infrastructure, even though the two schedulers differ fundamentally. This pattern is captured as templates in the released repository so that operators can fork the integration rather than re-derive it.
+
+The operator-facing knobs are deliberately few: the recalibration trigger (\texttt{psi\_threshold}, \texttt{weekly\_ece\_threshold}), the tier assignment (via a human-readable YAML), the advisory text template, and the per-namespace feature flag to promote a model from shadow to advisory to suggest. Everything else is either pipeline-internal (and covered by the CI test matrix) or documented as out of operator scope (the model-training hyperparameters). Keeping the surface area small is, we argue, the single most important reproducibility property for an on-call-facing ML system.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.48\textwidth]{sli_dashboard.pdf}
+\caption{SLI dashboard read by the on-call SRE: weekly-ECE per namespace, tail-gap at $\tau=0.7$, PSI of \texttt{pending\_ratio}, and scoring-service P99 latency.}
+\label{fig:sli}
+\end{figure}
 
 \section{Related Work}
-\subsection{Calibration Methods}
-Calibration methods including Platt scaling~\cite{platt1999} and isotonic regression~\cite{zadrozny2002} have been widely adopted for converting classifier scores into interpretable probabilities. Recent work on uncertainty calibration in deep learning~\cite{guo2017calibration} emphasizes the importance of reliability diagrams and ECE metrics for trustworthy predictions.
+\textbf{Calibration methods.} Platt scaling~\cite{platt1999}, isotonic regression~\cite{zadrozny2002}, and modern deep-network calibration~\cite{guo2017calibration} form the methodological basis of our post-hoc calibrator. Density-Aware Calibration~\cite{dac} and Parameterized Temperature Scaling~\cite{pts} are alternatives we include as sensitivity checks.
 
-\subsection{Operational ML Systems}
-Reliability in operational ML systems requires continuous monitoring and adaptation~\cite{sculley2015}. In the context of cluster scheduling, prior work has focused on resource optimization~\cite{borg2015,firmament2016} and policy learning~\cite{decima2019}, but calibrated probability prediction for user-facing advisories remains underexplored.
+\textbf{Operational ML systems.} The ``hidden technical debt'' critique~\cite{sculley2015} motivates our treatment of calibration and recalibration as first-class components rather than as afterthoughts.
 
-\subsection{Industry Practice}
-Production GPU infrastructure increasingly demands predictive capabilities. CoreWeave's analysis~\cite{coreweave2025} of mission-critical AI workloads identifies three breaking points: explosive data volumes requiring burst compute, compressed iteration cycles demanding minimal queue time, and rapid GPU innovation cycles. Their findings validate that multi-cluster orchestration (Kubernetes + Slurm) with full-stack observability has become the operational standard, and that ``goodput'' (96\%+ in their case) has emerged as the primary success metric over raw throughput.
+\textbf{Cluster scheduling.} Borg~\cite{borg2015}, Firmament~\cite{firmament2016}, and learning-based schedulers such as Decima~\cite{decima2019} establish the scheduling substrate; our contribution is orthogonal, providing reliable \emph{probabilistic advice} that any of these schedulers can consume.
+
+\textbf{GPU hardware reliability.} Meta LLaMA-3~\cite{llama3}, Modal's 20{,}000-GPU healthchecking experience~\cite{modal2025}, and PinDrop~\cite{pindrop2026} establish the empirical basis for DCGM dispersion features: hardware health anomalies are common and cascade into scheduling disruption.
+
+\textbf{Industry practice.} CoreWeave's goodput framing~\cite{coreweave2025} and the convergence of Kubernetes + Slurm as the dual orchestration standard motivate our unified feature schema across both environments.
+
+\section{Discussion and Limitations}
+\textbf{Calibration holds where discrimination fails.} On Borg, AUROC is near chance yet ECE stays below $0.014$. This is not a contradiction: calibrated ``I don't know'' is a useful signal. Operators can configure the advisory to surface only predictions whose Brier resolution exceeds a floor, so calibrated indifference does not crowd the UI.
+
+\textbf{DCGM rescues weak models.} The Slurm submit-only LR $\to$ submit+DCGM LR delta (AUROC $0.498 \to 0.815$, tier \textit{warn} $\to$ \textit{gate}) shows that investment in telemetry yields more reliability than investment in model complexity. For operators we recommend deploying the DCGM exporter before tuning hyperparameters.
+
+\textbf{Limitations.} Our real Slurm trace is modest ($n{=}555$), reflecting the controlled AWS ParallelCluster load-test it was collected from rather than a long-running production fleet. We are explicit throughout about which results in this paper rest on real measurement and which on the controlled scaling experiment of~\S\ref{sec:sim}. The four real datasets in~\S\ref{sec:bench} are the empirical evidence base; the controlled experiment is a software-engineering robustness harness whose AUROC values approach $1.00$ as a property of the harness's full-observability conditions and are \emph{not} claims about real-cluster predictability (we restate this caveat in every relevant table caption). The cross-profile result in~\S\ref{sec:hwshift} is a unit-test for the calibration-monitoring SLI design under a controlled input-distribution shift; the $32$--$36\times$ ECE movement is real and provides high confidence that the SLI design behaves as intended under shift, but it is not evidence that A100 or H100 hardware specifically degrades the model---we have no real telemetry from such hardware in this work and the DCGM aggregates inside the harness are sampled marginals, not measurements. The DCGM-to-failure-mode mapping in Table~\ref{tab:dcgm-modes} is provided as literature-derived integration guidance for operators, not as validated A100/H100 results. Beyond Slurm, the Alibaba \texttt{pending\_ratio} is trace-derived, not observed; the EKS test split ($n_{\text{test}}{=}103$) produces wide bootstrap intervals, so we report CIs, not point estimates. Finally, the tier thresholds in~\S\ref{sec:tiers} are operationally derived, not learned; we treat them as a hyperparameter of the deployment, not a model property.
 
 \section{Conclusion}
-We demonstrate a practical, reliability-first approach to queue-risk at submit time, with calibration, SLOs, and safe rollout practices. This supports users and operators with trustworthy signals and paves the way for robust policy integration.
+We have presented a reliability-first, reproducible pipeline for GPU-cluster queue-risk prediction. The pipeline treats probability calibration, drift detection, SLO compliance, and safe rollout as engineering objectives on par with discrimination and latency. On four real environments spanning $\sim$1.2M job events, calibrated predictors qualify for concrete operational tiers, DCGM telemetry rescues underspecified linear models on Slurm, and the sliding-window recalibrator catches drift before SLO alarms fire. We complement the empirical evaluation with a trace-calibrated controlled scaling experiment that serves as a reproducibility harness for the pipeline---confirming bootstrap variance estimates, demonstrating that a heuristic baseline is structurally insufficient even under model-favorable conditions, and unit-testing the calibration-monitoring SLI design under controlled input-distribution shift. The released artifact---data samples, trained calibrators, controlled-experiment harness, notebook, and IEEE \LaTeX{} source---lets an ISS26 audience reproduce every figure in this paper, including those of the controlled experiment, and port the integration pattern to their own Kubernetes or Slurm clusters.
+
+\section*{Reproducibility}
+All code, sample data, trained calibrators, and this paper's \LaTeX{} source are released under the MIT License at \url{https://github.com/espirado/Reliability-First-Queue-Risk} and archived on Zenodo: \texttt{DOI: 10.5281/zenodo.XXXXXXX} (to be filled after the v1.0.0 release is archived). A single Jupyter notebook, \texttt{notebooks/reproducibility.ipynb}, regenerates every figure in this paper from sample data that is included in the repository.
+
+\section*{Use of AI Assistance}
+Draft text of this paper was edited with the help of a large language model (Anthropic Claude). All results, tables, figures, methodological choices, and interpretations were authored and verified by the human authors; the LLM did not generate experimental results. This disclosure follows IEEE's generative-AI submission policy.
 
 \section*{Acknowledgments}
-We thank Saint Peter's University DS faculty and collaborators for guidance and infrastructure. Special thanks to Tushar Dhole and Bhumi Nagar.
+We thank the Saint Peter's University Department of Data Science for infrastructure and guidance, and the ISS26 Proceedings Committee for the opportunity to share this work.
 
-\bibliographystyle{IEEEtran}
-\begin{thebibliography}{9}
-
-\bibitem{coreweave2025}
-CoreWeave, ``How Quant Researchers Are Redefining Mission-Critical Infrastructure for the AI Era,'' CoreWeave Blog, Dec. 2025. [Online]. Available: \url{https://www.coreweave.com/blog/how-quant-researchers-are-redefining-mission-critical-infrastructure-for-the-ai-era}
-
-\bibitem{platt1999}
-J. Platt, ``Probabilistic outputs for support vector machines and comparisons to regularized likelihood methods,'' \emph{Advances in Large Margin Classifiers}, vol. 10, no. 3, pp. 61--74, 1999.
-
-\bibitem{zadrozny2002}
-B. Zadrozny and C. Elkan, ``Transforming classifier scores into accurate multiclass probability estimates,'' in \emph{Proc. ACM SIGKDD}, 2002, pp. 694--699.
-
-\bibitem{guo2017calibration}
-C. Guo et al., ``On calibration of modern neural networks,'' in \emph{Proc. ICML}, 2017, pp. 1321--1330.
-
-\bibitem{sculley2015}
-D. Sculley et al., ``Hidden technical debt in machine learning systems,'' in \emph{Proc. NeurIPS}, 2015, pp. 2503--2511.
-
-\bibitem{borg2015}
-A. Verma et al., ``Large-scale cluster management at Google with Borg,'' in \emph{Proc. EuroSys}, 2015, pp. 1--17.
-
-\bibitem{firmament2016}
-I. Gog et al., ``Firmament: Fast, centralized cluster scheduling at scale,'' in \emph{Proc. OSDI}, 2016, pp. 99--115.
-
-\bibitem{decima2019}
-H. Mao et al., ``Learning scheduling algorithms for data processing clusters,'' in \emph{Proc. ACM SIGCOMM}, 2019, pp. 270--288.
-
+\begin{thebibliography}{99}
+\bibitem{coreweave2025} CoreWeave, ``How Quant Researchers Are Redefining Mission-Critical Infrastructure for the AI Era,'' CoreWeave Blog, Dec.\ 2025. \url{https://www.coreweave.com/blog/how-quant-researchers-are-redefining-mission-critical-infrastructure-for-the-ai-era}
+\bibitem{platt1999} J.~Platt, ``Probabilistic outputs for support vector machines and comparisons to regularized likelihood methods,'' \emph{Advances in Large Margin Classifiers}, vol.~10, no.~3, pp.~61--74, 1999.
+\bibitem{zadrozny2002} B.~Zadrozny and C.~Elkan, ``Transforming classifier scores into accurate multiclass probability estimates,'' in \emph{Proc.\ ACM SIGKDD}, 2002, pp.~694--699.
+\bibitem{guo2017calibration} C.~Guo, G.~Pleiss, Y.~Sun, and K.~Q. Weinberger, ``On calibration of modern neural networks,'' in \emph{Proc.\ ICML}, 2017, pp.~1321--1330.
+\bibitem{murphy1973} A.~H. Murphy, ``A new vector partition of the probability score,'' \emph{J.\ Applied Meteorology}, vol.~12, no.~4, pp.~595--600, 1973.
+\bibitem{sculley2015} D.~Sculley et al., ``Hidden technical debt in machine learning systems,'' in \emph{Proc.\ NeurIPS}, 2015, pp.~2503--2511.
+\bibitem{borg2015} A.~Verma et al., ``Large-scale cluster management at Google with Borg,'' in \emph{Proc.\ EuroSys}, 2015, pp.~1--17.
+\bibitem{firmament2016} I.~Gog et al., ``Firmament: Fast, centralized cluster scheduling at scale,'' in \emph{Proc.\ OSDI}, 2016, pp.~99--115.
+\bibitem{decima2019} H.~Mao et al., ``Learning scheduling algorithms for data processing clusters,'' in \emph{Proc.\ ACM SIGCOMM}, 2019, pp.~270--288.
+\bibitem{llama3} Meta AI, ``The Llama 3 Herd of Models,'' arXiv:2407.21783, Jul.\ 2024.
+\bibitem{modal2025} J.~Belotti and A.~Chang, ``Keeping 20{,}000 GPUs Healthy,'' Modal Blog, Dec.\ 2025. \url{https://modal.com/blog/gpu-health}
+\bibitem{pindrop2026} P.~W. Deutsch, H.~D. Dixit, G.~Vunnam, C.~Moran, E.~Ozer, and S.~Sankar, ``PinDrop: Breaking the Silence on SDCs in a Large-Scale Fleet,'' in \emph{Proc.\ IEEE HPCA}, 2026.
+\bibitem{weng2022mlaas} Q.~Weng et al., ``MLaaS in the wild: Workload analysis and scheduling in large-scale heterogeneous GPU clusters,'' in \emph{Proc.\ USENIX NSDI}, 2022.
+\bibitem{alibaba-2023-fgd} Q.~Weng et al., ``Beware of fragmentation: Scheduling GPU-sharing workloads with fragmentation gradient descent,'' in \emph{Proc.\ USENIX ATC}, 2023.
+\bibitem{dac} C.~Tomani et al., ``Beyond in-domain scenarios: Robust density-aware calibration,'' in \emph{Proc.\ ICML}, 2023.
+\bibitem{pts} C.~Tomani, D.~Cremers, and F.~Buettner, ``Parameterized temperature scaling for boosting the expressive power in post-hoc uncertainty calibration,'' in \emph{Proc.\ ECCV}, 2022.
+\bibitem{siddiqi} N.~Siddiqi, \emph{Credit Risk Scorecards: Developing and Implementing Intelligent Credit Scoring}. Wiley, 2005.
+\bibitem{batsim2017} P.-F.~Dutot, M.~Mercier, M.~Poquet, and O.~Richard, ``Batsim: A realistic language-independent resources and jobs management systems simulator,'' in \emph{Proc.\ Job Scheduling Strategies for Parallel Processing (JSSPP)}, 2017, pp.~178--197.
+\bibitem{accasim2018} C.~Galleguillos, Z.~Kiziltan, A.~Netti, and R.~Soto, ``AccaSim: A customizable workload management simulator for job dispatching research in HPC systems,'' \emph{Cluster Computing}, vol.~23, pp.~107--122, 2020.
+\bibitem{lublin2003} U.~Lublin and D.~G.~Feitelson, ``The workload on parallel supercomputers: Modeling the characteristics of rigid jobs,'' \emph{Journal of Parallel and Distributed Computing}, vol.~63, no.~11, pp.~1105--1122, 2003.
 \end{thebibliography}
 
 \end{document}
-

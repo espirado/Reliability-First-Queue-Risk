@@ -1,0 +1,47 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "Reliability-First Queue Risk for GPU Clusters: Calibration, SLOs, and Reproducible Operational Integration"
+version: "1.0.0"
+date-released: "2026-04-24"
+license: MIT
+repository-code: "https://github.com/espirado/Reliability-First-Queue-Risk"
+authors:
+  - family-names: "Espira"
+    given-names: "Andrew"
+    orcid: "https://orcid.org/0009-0002-9196-8094"
+    affiliation: "Saint Peter's University"
+    email: "aespira@saintpeters.edu"
+  - family-names: "Dhole"
+    given-names: "Tushar"
+    affiliation: "Saint Peter's University"
+  - family-names: "Nagar"
+    given-names: "Bhumi"
+    affiliation: "Saint Peter's University"
+  - family-names: "Kumar"
+    given-names: "Sharath"
+    affiliation: "Saint Peter's University"
+keywords:
+  - GPU clusters
+  - Kubernetes
+  - Slurm
+  - calibration
+  - reproducibility
+  - scientific software
+  - drift detection
+  - SLO
+preferred-citation:
+  type: conference-paper
+  title: "Reliability-First Queue Risk for GPU Clusters: Calibration, SLOs, and Reproducible Operational Integration"
+  authors:
+    - family-names: "Espira"
+      given-names: "Andrew"
+    - family-names: "Dhole"
+      given-names: "Tushar"
+    - family-names: "Nagar"
+      given-names: "Bhumi"
+    - family-names: "Kumar"
+      given-names: "Sharath"
+  year: 2026
+  conference:
+    name: "ISS26: Improving Scientific Software Conference 2026"
+    location: "Boulder, CO, USA"

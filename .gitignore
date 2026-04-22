@@ -25,13 +25,25 @@ build/
 *.synctex.gz
 *.fdb_latexmk
 *.fls
-*.pdf
 
-# Data (large files)
+# Keep compiled paper PDF out of source control but KEEP figure PDFs
+tex/*.pdf
+!figures/*.pdf
+!**/figures/*.pdf
+
+# Data (large files) — samples and artifacts are tracked, raw bulk is not
 *.parquet
-*.csv
 *.pkl
 *.h5
+data/raw/**
+data/processed/**
+!data/samples/**
+!data/samples/*.csv
+!data/samples/*.json
+# CSV: ignore by default, whitelist artifacts/ and data/samples/ below
+*.csv
+!artifacts/*.csv
+!data/samples/*.csv
 
 # IDE
 .idea/

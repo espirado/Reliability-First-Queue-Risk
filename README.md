@@ -4,7 +4,8 @@
 > ISS26 (Improving Scientific Software Conference 2026) companion artifact.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Zenodo DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.XXXXXXX-blue)](https://doi.org/10.5281/zenodo.XXXXXXX)
+[![Paper artifact DOI](https://img.shields.io/badge/paper%20DOI-pending-lightgrey)](https://zenodo.org/communities/iss26)
+[![Slides DOI](https://img.shields.io/badge/slides%20DOI-10.5281%2Fzenodo.19687976-blue)](https://doi.org/10.5281/zenodo.19687976)
 [![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/espirado/Reliability-First-Queue-Risk/HEAD?labpath=notebooks%2Freproducibility.ipynb)
 
 This repository is the reproducible software artifact for the ISS26 paper
@@ -13,6 +14,13 @@ Operational Integration*. It contains the full calibration-aware pipeline, the
 benchmark results across four cluster environments (Amazon EKS, AWS ParallelCluster
 Slurm with DCGM, Alibaba GPU traces, Google Borg), and a single Jupyter notebook
 that regenerates every figure in the paper from sample data included in the repo.
+
+## ISS26 companion materials
+
+| Artifact | Identifier | Status |
+| --- | --- | --- |
+| This paper artifact (code, data, notebook, tex) | *DOI pending* | GitHub release [v1.0.0](https://github.com/espirado/Reliability-First-Queue-Risk/releases/tag/v1.0.0), Zenodo deposit pending ISS26 curator approval |
+| Conference talk slides (VGAC: Predictive Queue Intelligence for GPU Cluster Observability) | [10.5281/zenodo.19687976](https://doi.org/10.5281/zenodo.19687976) | Submitted to the [ISS26 Proceedings](https://zenodo.org/communities/iss26) community |
 
 ## What is in here
 

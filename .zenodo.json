@@ -47,6 +47,12 @@
       "relation": "isSupplementTo",
       "identifier": "https://github.com/espirado/Reliability-First-Queue-Risk",
       "resource_type": "software"
+    },
+    {
+      "relation": "isDocumentedBy",
+      "identifier": "10.5281/zenodo.19687976",
+      "resource_type": "presentation",
+      "scheme": "doi"
     }
   ],
   "conference_title": "Improving Scientific Software Conference 2026 (ISS26)",

@@ -52,14 +52,19 @@ keywords:
   - DCGM telemetry
   - ISS26
 identifiers:
-  # The Zenodo DOI is auto-minted on release; once Zenodo returns it, replace
-  # the placeholder below with the assigned identifier (e.g. 10.5281/zenodo.NNNNNNNN).
+  # Paper artifact (v1.0.0) — Zenodo DOI auto-minted on release; replace
+  # PENDING once the ISS26 curators approve the paper deposit.
   - type: doi
     value: "10.5281/zenodo.PENDING"
     description: "Zenodo archive of v1.0.0 (auto-deposited from GitHub release)"
   - type: url
     value: "https://github.com/espirado/Reliability-First-Queue-Risk/releases/tag/v1.0.0"
     description: "GitHub release v1.0.0 (publication-ready ISS26 artifact)"
+  # Companion talk slides — reserved DOI, live once ISS26 curators approve
+  # the community submission.
+  - type: doi
+    value: "10.5281/zenodo.19687976"
+    description: "ISS26 presentation slides (VGAC: Predictive Queue Intelligence for GPU Cluster Observability)"
 references:
   - type: software
     title: "scikit-learn"

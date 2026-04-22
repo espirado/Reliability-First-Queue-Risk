@@ -1,47 +1,115 @@
 cff-version: 1.2.0
-message: "If you use this software, please cite it as below."
-title: "Reliability-First Queue Risk for GPU Clusters: Calibration, SLOs, and Reproducible Operational Integration"
-version: "1.0.0"
-date-released: "2026-04-24"
+message: >-
+  If you use this software or its accompanying paper, please cite both the
+  conference paper (preferred-citation block, below) and this software
+  artifact.
+type: software
+title: >-
+  Reliability-First Queue Risk for GPU Clusters: Calibration, SLOs, and
+  Reproducible Operational Integration
+abstract: >-
+  Reproducible scientific-software artifact accompanying the ISS26 paper.
+  Includes the full calibration-aware pipeline (feature engineering, five
+  model families, isotonic post-hoc calibration, four-tier qualification,
+  PSI-based drift detection, sliding-window recalibration), sample data for
+  four cluster environments (EKS, Slurm with DCGM, Alibaba, Google Borg),
+  trained calibrators, all benchmark and controlled-experiment artifacts,
+  and a single Jupyter notebook that regenerates every figure in the paper.
+version: 1.0.0
+date-released: "2026-04-22"
+commit: dbb11588fb3ffe3acdd4d49f9e9493917a82af97
 license: MIT
 repository-code: "https://github.com/espirado/Reliability-First-Queue-Risk"
+url: "https://github.com/espirado/Reliability-First-Queue-Risk"
 authors:
-  - family-names: "Espira"
-    given-names: "Andrew"
+  - family-names: Espira
+    given-names: Andrew
     orcid: "https://orcid.org/0009-0002-9196-8094"
-    affiliation: "Saint Peter's University"
-    email: "aespira@saintpeters.edu"
-  - family-names: "Dhole"
-    given-names: "Tushar"
-    affiliation: "Saint Peter's University"
-  - family-names: "Nagar"
-    given-names: "Bhumi"
-    affiliation: "Saint Peter's University"
-  - family-names: "Kumar"
-    given-names: "Sharath"
-    affiliation: "Saint Peter's University"
+    affiliation: Saint Peter's University
+    email: aespira@saintpeters.edu
+  - family-names: Dhole
+    given-names: Tushar
+    affiliation: Saint Peter's University
+  - family-names: Nagar
+    given-names: Bhumi
+    affiliation: Saint Peter's University
+  - family-names: Kumar
+    given-names: Sharath
+    affiliation: Saint Peter's University
 keywords:
   - GPU clusters
   - Kubernetes
   - Slurm
   - calibration
+  - Expected Calibration Error
+  - Brier decomposition
+  - isotonic regression
+  - drift detection
+  - Population Stability Index
+  - Service Level Objectives
   - reproducibility
   - scientific software
-  - drift detection
-  - SLO
+  - DCGM telemetry
+  - ISS26
+identifiers:
+  # The Zenodo DOI is auto-minted on release; once Zenodo returns it, replace
+  # the placeholder below with the assigned identifier (e.g. 10.5281/zenodo.NNNNNNNN).
+  - type: doi
+    value: "10.5281/zenodo.PENDING"
+    description: "Zenodo archive of v1.0.0 (auto-deposited from GitHub release)"
+  - type: url
+    value: "https://github.com/espirado/Reliability-First-Queue-Risk/releases/tag/v1.0.0"
+    description: "GitHub release v1.0.0 (publication-ready ISS26 artifact)"
+references:
+  - type: software
+    title: "scikit-learn"
+    authors:
+      - name: "scikit-learn developers"
+    url: "https://scikit-learn.org"
+  - type: software
+    title: "NVIDIA Data Center GPU Manager (DCGM)"
+    authors:
+      - name: "NVIDIA Corporation"
+    url: "https://developer.nvidia.com/dcgm"
 preferred-citation:
   type: conference-paper
-  title: "Reliability-First Queue Risk for GPU Clusters: Calibration, SLOs, and Reproducible Operational Integration"
+  title: >-
+    Reliability-First Queue Risk for GPU Clusters: Calibration, SLOs, and
+    Reproducible Operational Integration
   authors:
-    - family-names: "Espira"
-      given-names: "Andrew"
-    - family-names: "Dhole"
-      given-names: "Tushar"
-    - family-names: "Nagar"
-      given-names: "Bhumi"
-    - family-names: "Kumar"
-      given-names: "Sharath"
+    - family-names: Espira
+      given-names: Andrew
+      orcid: "https://orcid.org/0009-0002-9196-8094"
+      affiliation: Saint Peter's University
+    - family-names: Dhole
+      given-names: Tushar
+      affiliation: Saint Peter's University
+    - family-names: Nagar
+      given-names: Bhumi
+      affiliation: Saint Peter's University
+    - family-names: Kumar
+      given-names: Sharath
+      affiliation: Saint Peter's University
   year: 2026
+  month: 4
+  collection-title: >-
+    Proceedings of the Improving Scientific Software Conference 2026 (ISS26)
   conference:
-    name: "ISS26: Improving Scientific Software Conference 2026"
-    location: "Boulder, CO, USA"
+    name: "Improving Scientific Software Conference 2026 (ISS26)"
+    city: Boulder
+    region: CO
+    country: US
+    date-start: "2026-04-13"
+    date-end: "2026-04-17"
+  publisher:
+    name: "UCAR / Zenodo (ISS26 Proceedings)"
+  # The conference-paper DOI assigned by Zenodo on community acceptance.
+  # Replace once minted.
+  doi: "10.5281/zenodo.PENDING"
+  url: "https://github.com/espirado/Reliability-First-Queue-Risk/releases/tag/v1.0.0"
+  keywords:
+    - GPU clusters
+    - calibration
+    - SLO
+    - reliability engineering
+    - reproducibility

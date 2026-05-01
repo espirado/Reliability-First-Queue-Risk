@@ -15,6 +15,14 @@
 \usepackage{hyperref}
 \graphicspath{{../figures/}}
 
+% Allow up to 3em of extra inter-word stretch when needed to avoid
+% overfull boxes from long \texttt{} tokens in narrow IEEE columns,
+% and let \url{} break at hyphens, slashes, and dots.
+\emergencystretch=3em
+\makeatletter
+\g@addto@macro{\UrlBreaks}{\UrlOrds}
+\makeatother
+
 \begin{document}
 
 \title{Reliability-First Queue Risk for GPU Clusters:\\Calibration, SLOs, and Reproducible Operational Integration}
@@ -78,7 +86,7 @@ This section describes the pipeline in enough detail to reproduce every number i
 \subsection{Data sources and collection}
 \textbf{EKS (Kubernetes).} A 1.2M pod-event trace was collected from a production Amazon EKS cluster via the Kubernetes informer API, joined with cAdvisor resource metrics and NVIDIA DCGM telemetry, and materialized as the parquet file \texttt{phase3\_unified\_with\_telemetry\_v8.parquet}. Pod identifiers and namespaces are hashed, and a subsampled evaluation split (\textit{EKS-Dec}, $n_{\text{test}}=103$) is used for the Paper~1-comparable benchmark.
 
-\textbf{Slurm HPC.} A 555-job trace was collected on an AWS ParallelCluster Slurm deployment with four GPU compute nodes, over a controlled load-test. The feature extractor joined \texttt{sacct} queue state with per-node DCGM snapshots at submit timestamps to produce 38 features in \texttt{datasets/slurm/training\_dataset.parquet}; the public replica ships as \texttt{datasets/slurm/training\_dataset.csv}.
+\textbf{Slurm HPC.} A 555-job trace was collected on an AWS ParallelCluster Slurm deployment with four GPU compute nodes, over a controlled load-test. The feature extractor joined \texttt{sacct} queue state with per-node DCGM snapshots at submit timestamps to produce 38 features; the resulting parquet is \texttt{training\_dataset.parquet} and a public CSV replica ships in \texttt{datasets/slurm/}.
 
 \textbf{Alibaba.} We use the public cluster-trace-gpu-v2020 and v2023 traces~\cite{weng2022mlaas,alibaba-2023-fgd}. Because raw queue-state snapshots are not published, we reconstruct \texttt{pending\_ratio} and \texttt{queue\_depth} per job via trace-replay: for each submission timestamp we count concurrently-pending jobs from the same trace. The replay protocol is implemented in \texttt{code/features/trace\_replay.py}.
 
@@ -94,25 +102,26 @@ We use two feature families, both computed in \texttt{code/features/feature\_eng
 \subsection{Label construction}
 The binary label \texttt{label\_long\_wait} is 1 if the observed wait exceeds the per-dataset 90th percentile. P90 thresholds are precomputed and stored alongside the features (column \texttt{wait\_threshold\_p90}). Positive rates (Table~\ref{tab:datasets}) span $9.8$--$34.0\%$, so every reported result is a class-imbalanced classification.
 
-\begin{table}[t]
+\begin{table}[!t]
 \centering
-\caption{Evaluation splits and positive rates.}
+\caption{Evaluation splits and positive rates. Features are submit-time (S) or submit-time + DCGM (S+D).}
 \label{tab:datasets}
-\small
-\begin{tabular}{@{}lrrrl@{}}
+\scriptsize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{@{}lrrcl@{}}
 \toprule
-\textbf{Dataset} & \textbf{$n_{\text{test}}$} & \textbf{Pos.\ rate} & \textbf{Features} & \textbf{Scheduler} \\
+\textbf{Dataset} & $n_{\text{test}}$ & \textbf{Pos.\ rate} & \textbf{Features} & \textbf{Sched.} \\
 \midrule
-EKS-Dec  & 103   & 34.0\% & 10 (submit)         & Kubernetes \\
-Slurm    & 167   & 9.9\%  & 10 / 23 (submit / +DCGM)  & Slurm \\
-Alibaba  & 853   & 9.96\% & 10 (submit)         & PAI/Fuxi \\
-Borg     & 4{,}000 & 9.80\% & 10 (submit)         & Borg \\
+EKS-Dec & 103   & 34.0\% & 10 (S)        & K8s    \\
+Slurm   & 167   & 9.9\%  & 10/23 (S/S+D) & Slurm  \\
+Alibaba & 853   & 9.96\% & 10 (S)        & PAI    \\
+Borg    & 4{,}000 & 9.80\% & 10 (S)        & Borg   \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \subsection{Train/test protocol}
-We use 5-fold stratified cross-validation (\texttt{sklearn.model\_selection.StratifiedKFold}, seed $42$) for model selection and a held-out test split for the reported numbers. Confidence intervals are percentile bootstrap with $1{,}000$ resamples (stored in \texttt{artifacts/bootstrap\_confidence\_intervals.csv}). A temporal hold-out---the last $20\%$ of jobs by submit timestamp---is reserved for drift and recalibration analysis so that the drift results are not contaminated by CV leakage. Test-set sizes are reported per environment so single-number reporting cannot mask small-$N$ variance.
+We use 5-fold stratified cross-validation (\texttt{StratifiedKFold}, seed 42) for model selection and a held-out test split for the reported numbers. Confidence intervals are percentile bootstrap with 1{,}000 resamples (stored in \texttt{bootstrap\_confidence\_intervals.csv}). A temporal hold-out (the last 20\% of jobs by submit timestamp) is reserved for drift and recalibration analysis so that the drift results are not contaminated by CV leakage. Test-set sizes are reported per environment so single-number reporting cannot mask small-$N$ variance.
 
 \subsection{Model zoo and hyperparameters}
 We evaluate five model families chosen for their ubiquity in the scientific-Python ecosystem, so that reproduction requires only \texttt{scikit-learn}, \texttt{xgboost}, and \texttt{lightgbm}: Logistic Regression (L2, $C=1.0$), Random Forest ($n\_estimators=300$, $max\_depth=12$), Gradient Boosting ($n\_estimators=200$, $learning\_rate=0.05$, $max\_depth=4$), XGBoost (same shape, \texttt{scale\_pos\_weight} set from training positive rate), and LightGBM ($num\_leaves=63$, $learning\_rate=0.05$). We deliberately use a single hyperparameter configuration across all four environments, testing whether a ``stock'' ML configuration---the kind a busy research software engineer would actually deploy---produces usable models across schedulers.
@@ -287,7 +296,7 @@ We are explicit about what this experiment can and cannot demonstrate.
 \textbf{What it cannot demonstrate.} The controlled experiment uses Slurm-backfill mechanics so wait time is, by construction, a near-deterministic function of submit-time queue state under full observability. AUROC values reported below therefore approach $1.00$ as a property of the experiment's controlled observability conditions, not as a claim about real-cluster predictability. DCGM aggregates are sampled as marginal distributions per profile and are not causally linked to wait time inside the experiment; consequently the cross-profile result in~\S\ref{sec:hwshift} is a unit-test for the \emph{calibration-monitoring SLI design under controlled distribution shift}, not a prediction about A100 or H100 hardware. We report the four real datasets in~\S\ref{sec:bench} as the empirical evidence for queue-risk predictability and we report the controlled experiment in this section strictly as a software-engineering robustness study.
 
 \subsection{Experimental harness design}
-The harness (\texttt{code/simulation/slurm\_simulator.py} in the released repository) is seeded, deterministic, and calibrated on the real 555-job trace. Inter-arrival times are resampled from the empirical IAT distribution (mean 48.9\,s, median 20\,s, max 1{,}141\,s) with an \texttt{arrival\_scale} multiplier for stress variants. Job-type mixture, per-type GPU-request distribution, and per-type service-time distribution are drawn from the real trace. Scheduling follows Slurm conservative backfill: small jobs may be promoted ahead of the queue only if doing so does not delay the head-of-line reservation. Submit-time features (\texttt{pending\_ratio}, \texttt{queue\_depth\_norm}, \texttt{fragmentation\_score}, \texttt{congestion\_score}, and others) are captured before admission, preserving the non-leakage contract from~\S\ref{sec:method}. DCGM aggregates (temperature, power, utilization dispersion) are drawn from two parameterized marginal profiles: \emph{profile-V}, calibrated to the v100/t4 envelope of our real trace, and \emph{profile-A}, whose marginals track the published telemetry envelope of the A100/H100 generation reported in Meta LLaMA-3~\cite{llama3}, Modal's 20{,}000-GPU fleet~\cite{modal2025}, and PinDrop~\cite{pindrop2026} (mean utilization 55\% vs.\ 25\%; max temperature $78^{\circ}$\,C vs.\ $55^{\circ}$\,C; power 310\,W vs.\ 85\,W). The two profiles form a controlled distribution-shift pair; they are not claims of equivalence with measured A100/H100 telemetry.
+The harness (\texttt{slurm\_simulator.py} in the released repository) is seeded, deterministic, and calibrated on the real 555-job trace. Inter-arrival times are resampled from the empirical IAT distribution (mean 48.9\,s, median 20\,s, max 1{,}141\,s) with an \texttt{arrival\_scale} multiplier for stress variants. Job-type mixture, per-type GPU-request distribution, and per-type service-time distribution are drawn from the real trace. Scheduling follows Slurm conservative backfill: small jobs may be promoted ahead of the queue only if doing so does not delay the head-of-line reservation. Submit-time features (\texttt{pending\_ratio}, \texttt{queue\_depth\_norm}, \texttt{fragmentation\_score}, \texttt{congestion\_score}, and others) are captured before admission, preserving the non-leakage contract from~\S\ref{sec:method}. DCGM aggregates (temperature, power, utilization dispersion) are drawn from two parameterized marginal profiles: \emph{profile-V}, calibrated to the v100/t4 envelope of our real trace, and \emph{profile-A}, whose marginals track the published telemetry envelope of the A100/H100 generation reported in Meta LLaMA-3~\cite{llama3}, Modal's 20{,}000-GPU fleet~\cite{modal2025}, and PinDrop~\cite{pindrop2026} (mean utilization 55\% vs.\ 25\%; max temperature $78^{\circ}$\,C vs.\ $55^{\circ}$\,C; power 310\,W vs.\ 85\,W). The two profiles form a controlled distribution-shift pair; they are not claims of equivalence with measured A100/H100 telemetry.
 
 \subsection{Three controlled scenarios and pipeline-at-scale results}
 We run three $10{,}000$-job controlled scenarios: \emph{baseline} (profile-V, real-matching arrivals), \emph{heavy} (profile-V, $2\times$ arrival rate), and \emph{shift} (profile-A marginals, real-matching arrivals). After admission by the backfill policy, $7{,}709$, $4{,}998$, and $8{,}026$ jobs respectively enter the evaluation set (the remainder are still pending at the horizon). All three scenarios retain the 9.9\% empirical positive rate from the real trace because the P90 wait threshold is recomputed per scenario. Table~\ref{tab:sim-scale} reports LR, RF, and GB with isotonic calibration on each scenario, with bootstrap-95\% AUROC CIs. As anticipated in~\S\ref{sec:sim-scope}, AUROC approaches $1.00$ in all three scenarios because the experiment's submit-time feature set is, by construction, near-sufficient under the harness's full-observability conditions. The relevant reading of Table~\ref{tab:sim-scale} is not the AUROC magnitude but its low variance: the bootstrap intervals collapse to $\pm 0.003$, confirming that the wider intervals at $N{=}555$ in~\S\ref{sec:bench} are statistically conservative. Every artifact referenced below lives in \texttt{paper2\_repo/artifacts/slurm\_sim\_*}.
@@ -296,22 +305,23 @@ We run three $10{,}000$-job controlled scenarios: \emph{baseline} (profile-V, re
 \caption{Controlled scaling experiment, $10{,}000$-job scenarios. AUROC values approach $1.00$ as a property of the harness's full-observability conditions (\S\ref{sec:sim-scope}) and are \emph{not} claims about real-cluster predictability; the operationally meaningful reading of this table is the tightness of the bootstrap CIs ($\pm 0.003$) and the stability of \emph{gate}-tier ECE under controlled load and input perturbation. Bootstrap $95\%$ CIs shown for AUROC. Numbers from \texttt{artifacts/slurm\_sim\_metrics.json}.}
 \label{tab:sim-scale}
 \centering
-\small
+\scriptsize
+\setlength{\tabcolsep}{3pt}
 \begin{tabular}{llcccc}
 \toprule
-Scenario & Model & AUROC & ECE & AUPRC & Tier \\
+Scenario & Model & AUROC [95\% CI] & ECE & AUPRC & Tier \\
 \midrule
-\textbf{Baseline}   & LR & $0.995$ $[0.992,0.997]$ & $0.012$ & $0.942$ & gate \\
-                    & RF & $1.000$ $[1.000,1.000]$ & $0.002$ & $1.000$ & gate \\
-                    & GB & $1.000$ $[1.000,1.000]$ & $0.002$ & $1.000$ & gate \\
+\textbf{Baseline}        & LR & 0.995 [0.992,0.997] & 0.012 & 0.942 & gate \\
+                         & RF & 1.000 [1.000,1.000] & 0.002 & 1.000 & gate \\
+                         & GB & 1.000 [1.000,1.000] & 0.002 & 1.000 & gate \\
 \addlinespace
-\textbf{Heavy load} & LR & $0.992$ $[0.987,0.996]$ & $0.013$ & $0.901$ & gate \\
- ($2\times$ arrivals)& RF & $0.994$ $[0.980,1.00]$ & $0.004$ & $0.980$ & gate \\
-                    & GB & $0.995$ $[0.981,1.00]$ & $0.003$ & $0.990$ & gate \\
+\textbf{Heavy} ($2\times$) & LR & 0.992 [0.987,0.996] & 0.013 & 0.901 & gate \\
+                         & RF & 0.994 [0.980,1.000] & 0.004 & 0.980 & gate \\
+                         & GB & 0.995 [0.981,1.000] & 0.003 & 0.990 & gate \\
 \addlinespace
-\textbf{Shift}      & LR & $0.992$ $[0.989,0.995]$ & $0.012$ & $0.909$ & gate \\
- (profile-A         & RF & $0.998$ $[0.996,0.999]$ & $0.005$ & $0.970$ & gate \\
-  marginals)        & GB & $0.999$ $[0.997,1.000]$ & $0.006$ & $0.982$ & gate \\
+\textbf{Shift} (profile-A) & LR & 0.992 [0.989,0.995] & 0.012 & 0.909 & gate \\
+                         & RF & 0.998 [0.996,0.999] & 0.005 & 0.970 & gate \\
+                         & GB & 0.999 [0.997,1.000] & 0.006 & 0.982 & gate \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -463,7 +473,7 @@ Draft text of this paper was edited with the help of a large language model (Ant
 We thank the Saint Peter's University Department of Data Science for infrastructure and guidance.
 
 \begin{thebibliography}{99}
-\bibitem{coreweave2025} CoreWeave, ``How Quant Researchers Are Redefining Mission-Critical Infrastructure for the AI Era,'' CoreWeave Blog, Dec.\ 2025. \url{https://www.coreweave.com/blog/how-quant-researchers-are-redefining-mission-critical-infrastructure-for-the-ai-era}
+\bibitem{coreweave2025} CoreWeave, ``How quant researchers are redefining mission-critical infrastructure for the AI era,'' CoreWeave Blog, Dec.\ 2025. [Online]. Available: \url{https://www.coreweave.com/blog/how-quant-researchers-are-redefining-mission-critical-infrastructure-for-the-ai-era}
 \bibitem{platt1999} J.~Platt, ``Probabilistic outputs for support vector machines and comparisons to regularized likelihood methods,'' \emph{Advances in Large Margin Classifiers}, vol.~10, no.~3, pp.~61--74, 1999.
 \bibitem{zadrozny2002} B.~Zadrozny and C.~Elkan, ``Transforming classifier scores into accurate multiclass probability estimates,'' in \emph{Proc.\ ACM SIGKDD}, 2002, pp.~694--699.
 \bibitem{guo2017calibration} C.~Guo, G.~Pleiss, Y.~Sun, and K.~Q. Weinberger, ``On calibration of modern neural networks,'' in \emph{Proc.\ ICML}, 2017, pp.~1321--1330.

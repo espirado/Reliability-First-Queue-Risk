@@ -104,8 +104,12 @@ We agree this story was easy to miss in the original draft and it now sits up fr
 ## Summary of file changes
 
 - `tex/ieee_paper2.tex` — all reviewer-requested edits.
-- `tex/ieee_paper2.pdf` — rebuilt; verified 0 overfull boxes, 10 pages, ≤6,000 words including references.
+- `tex/ieee_paper2.pdf` — rebuilt; 10 pages, ~7,300 words including references, 0 overfull boxes.
 - `artifacts/feature_importance.json` — new artifact supporting R2.1.
 - `submission/RESPONSE_TO_REVIEWERS.md` — this letter.
+
+## Diff summary vs. first-round PDF
+
+The reviewer-requested content additions (R1.1 acronyms appendix, R1.7 in-text figure references, R2.1 §III.J feature importance + Table III, R2.2 full sliding-window subsection, R2.3 mechanistic paragraph, R2.4 A100/H100 feasibility, R2.5 cross-env sentence + limitations paragraph) grew the manuscript. To stay within the ISS26 "roughly 3000–6000 words" guideline we then compressed reduncancy in the Abstract, §III (Methodology), §V (Benchmark Results), §VII (Controlled Scaling), §VIII (Case Study), and §IX (Limitations). No reviewer-response content was removed; only wording tightened. The bibliography is set in `\footnotesize` with a $-1.5$pt itemsep so the 20 references fit on the final page without an orphaned page 11.
 
 We hope these revisions address the reviewers' concerns and we welcome any further feedback.
